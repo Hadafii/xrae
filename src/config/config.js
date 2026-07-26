@@ -322,9 +322,20 @@ function validate(config) {
         'meaning silent enforcement. Configure notify.discordWebhook first.');
   }
 
-  if (!fs.existsSync(config.scanner.volumesPath)) {
-    problems.push(`scanner.volumesPath does not exist: ${config.scanner.volumesPath}`);
-  } else if (!fs.statSync(config.scanner.volumesPath).isDirectory()) {
+  // EACCES is deliberately NOT a validation failure. On a locked-down node a
+  // manual `sudo -u xrae` shell cannot traverse /var/lib/pterodactyl at all,
+  // while the systemd unit holds CAP_DAC_READ_SEARCH and reads it fine.
+  // Reporting that as "does not exist" sent an operator down the wrong path.
+  // Doctor checks readability separately and explains the capability story.
+  let volumesStat = null;
+  try {
+    volumesStat = fs.statSync(config.scanner.volumesPath);
+  } catch (error) {
+    if (error.code !== 'EACCES' && error.code !== 'EPERM') {
+      problems.push(`scanner.volumesPath does not exist: ${config.scanner.volumesPath}`);
+    }
+  }
+  if (volumesStat && !volumesStat.isDirectory()) {
     problems.push(`scanner.volumesPath is not a directory: ${config.scanner.volumesPath}`);
   }
 

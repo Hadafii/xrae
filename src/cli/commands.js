@@ -348,9 +348,17 @@ export async function commandDoctor({ configPath }) {
     const entries = fs.readdirSync(config.scanner.volumesPath);
     print(`${CHECK} volumes directory readable (${entries.length} entries)`);
   } catch (error) {
-    print(`${CROSS} cannot read ${config.scanner.volumesPath}: ${error.code}`);
-    print('      fix: grant CAP_DAC_READ_SEARCH, or run as a user with read access');
-    failures += 1;
+    if (error.code === 'EACCES' || error.code === 'EPERM') {
+      print(`${WARN} cannot read ${config.scanner.volumesPath} from this shell (${error.code})`);
+      print('      expected on a locked-down node: a manual shell has no capabilities, while');
+      print('      the systemd unit grants CAP_DAC_READ_SEARCH so the running service can read it.');
+      print('      verify with: systemctl start x-rae && journalctl -u x-rae -f');
+      warnings += 1;
+    } else {
+      print(`${CROSS} cannot read ${config.scanner.volumesPath}: ${error.code}`);
+      print('      fix: check the path in config.json against system.data in /etc/pterodactyl/config.yml');
+      failures += 1;
+    }
   }
 
   // 7. State directory
