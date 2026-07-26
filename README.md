@@ -58,7 +58,12 @@ xrae scan                 satu siklus lalu keluar
 xrae scan --dry-run       satu siklus, tindakan dibuat mustahil secara teknis
 xrae run                  jalan terus (ini yang dipakai systemd)
 xrae explain <id>         tampilkan bukti tersimpan untuk satu server
+xrae notify-test          kirim satu notice percobaan ke webhook Discord
 ```
+
+`xrae notify-test` ada supaya webhook terbukti jalan **sebelum** dipercaya
+membawa alert sungguhan — webhook yang dihapus di sisi Discord gagal diam-diam
+sampai hari dia dibutuhkan.
 
 `xrae explain` ada karena satu aturan: kalau kita tidak bisa menjelaskan ke
 pelanggan kenapa dia ditindak, kita tidak boleh menindaknya.

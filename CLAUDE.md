@@ -29,10 +29,16 @@ node bin/xrae --help
 node bin/xrae doctor  --config <path>     # validates config, creds, permissions
 node bin/xrae scan    --config <path> --dry-run --verbose
 node bin/xrae explain <server-identifier> --config <path>
+node bin/xrae notify-test --config <path>  # sends one test notice to the webhook
 ```
 
 Always run `npm test` before reporting a task complete. It is fast and there is
 no excuse for skipping it.
+
+Windows dev: use `--config config.dev.json` (local fixtures under `dev/`).
+POSIX permission checks are skipped on win32 (`checkFilePermissions`), and 3
+tests skip honestly (symlink creation and mode bits need Linux). Full fidelity
+lives in WSL or on a real node; the suite must be fully green on Linux.
 
 ---
 

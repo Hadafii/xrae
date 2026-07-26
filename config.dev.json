@@ -1,0 +1,25 @@
+// Config untuk development di Windows/macOS: path relatif ke root repo,
+// jalankan command dari sini. Kredensial tetap dari xrae.env di sebelah file
+// ini (auto-load). Panel placeholder: doctor/scan akan jujur bilang panel
+// unreachable; notify-test dan test suite tidak butuh panel.
+{
+  "panel": {
+    "url": "https://panel.example.com"
+  },
+
+  "scanner": {
+    "volumesPath": "dev/volumes",
+    "nodeId": 0,
+    "intervalMinutes": 1,
+    "collectCpu": false,
+    "collectConnections": false
+  },
+
+  "policy": {
+    "mode": "observe"
+  },
+
+  "state": {
+    "path": "dev/state.json"
+  }
+}

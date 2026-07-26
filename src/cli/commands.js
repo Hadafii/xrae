@@ -523,3 +523,46 @@ export async function commandExplain({ configPath, identifier }) {
   print('');
   return 0;
 }
+
+// ---------------------------------------------------------------------------
+// xrae notify-test
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends one test notice through the real notifier. Exists so an operator can
+ * prove the webhook works BEFORE trusting it to carry a real alert - a webhook
+ * that was deleted on the Discord side fails silently until the day it matters.
+ */
+export async function commandNotifyTest({ configPath, verbose }) {
+  const { config, warnings } = loadConfig({ filePath: configPath });
+  const logger = new ConsoleLogger({ level: verbose ? 'debug' : 'warn' });
+  for (const warning of warnings) logger.warn(warning);
+
+  if (!config.notify.discordWebhook) {
+    print(`\n${CROSS} no Discord webhook configured`);
+    print('      fix: set XRAE_DISCORD_WEBHOOK in xrae.env, then run this again\n');
+    return 1;
+  }
+
+  const app = buildApplication({ config, dryRun: true, logger });
+
+  print('\n  Sending a test notice to Discord...');
+  const delivered = await app.notifier.sendNotice({
+    title: 'Webhook test',
+    body:
+      'If you can read this, X-Rae can reach a human when it matters.\n\n' +
+      `Sent by \`xrae notify-test\` · mode \`${config.policy.mode}\` · node ` +
+      `${config.scanner.nodeId === 0 ? 'all visible' : config.scanner.nodeId}`,
+    level: 'info',
+  });
+
+  if (delivered) {
+    print(`${CHECK} delivered - check the channel\n`);
+    return 0;
+  }
+
+  print(`${CROSS} delivery failed (the log line above has the HTTP reason)`);
+  print('      common causes: webhook deleted on the Discord side, a typo in the');
+  print('      URL, or Discord returning 429 during an incident\n');
+  return 1;
+}

@@ -2,7 +2,7 @@
 // JOB:   Parse arguments and hand off to a command. Nothing else.
 
 import { ConfigError } from '../config/config.js';
-import { commandInit, commandDoctor, commandScan, commandExplain } from './commands.js';
+import { commandInit, commandDoctor, commandScan, commandExplain, commandNotifyTest } from './commands.js';
 
 export const VERSION = '1.0.0';
 const DEFAULT_CONFIG_PATH = '/etc/x-rae/config.json';
@@ -19,6 +19,7 @@ const HELP = `
     scan                 run one cycle and exit
     run                  run continuously (this is what systemd uses)
     explain <id>         show the stored evidence for one server
+    notify-test          send one test notice to the Discord webhook
     version              print the version
 
   OPTIONS
@@ -116,6 +117,9 @@ export async function main(argv = process.argv.slice(2)) {
         }
         return await commandExplain({ ...options, identifier });
       }
+
+      case 'notify-test':
+        return await commandNotifyTest(options);
 
       case 'version':
         process.stdout.write(`${VERSION}\n`);

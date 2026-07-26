@@ -159,6 +159,39 @@ test('every detection rule declares when it is wrong', async () => {
   }
 });
 
+test('the shipped safety defaults match what CLAUDE.md promises', async () => {
+  // CLAUDE.md tells an agent working in this repo that these defaults are
+  // guardrails, not preferences. If someone quietly relaxes one, the document
+  // becomes advice that is wrong - which is worse than no document, because it
+  // is trusted. Pin them here.
+  const { DEFAULT_CONFIG } = await import('../src/config/config.js');
+
+  assert.equal(DEFAULT_CONFIG.policy.mode, 'observe', 'X-Rae must never ship acting on servers by default');
+  assert.equal(DEFAULT_CONFIG.policy.minConfidenceToSuspend, 'critical');
+  assert.ok(DEFAULT_CONFIG.policy.consecutiveDetections >= 2, 'one bad cycle must never be enough to act');
+  assert.ok(DEFAULT_CONFIG.policy.maxActionsPerCycle <= 5, 'the per-cycle blast radius must stay small');
+  assert.ok(
+    DEFAULT_CONFIG.policy.anomalyAbortRatio > 0 && DEFAULT_CONFIG.policy.anomalyAbortRatio <= 0.3,
+    'the fleet-anomaly cutoff must stay low enough to catch a cascade',
+  );
+  assert.ok(DEFAULT_CONFIG.policy.scoreHalfLifeHours > 0, 'without decay, noise accumulates into a suspension');
+});
+
+test('ports that collide with real games never re-enter the pool list', async () => {
+  // 7777 is Terraria, ARK, Unturned and Satisfactory. 8080 is every web panel.
+  // Flagging these turns the detector into a denial-of-service tool, which is
+  // scenario S4 in the design doc.
+  const { MINER_POOL_PORTS } = await import('../src/domain/rules.js');
+
+  for (const port of [7777, 8080, 8888, 6666, 9999, 8008]) {
+    assert.equal(
+      MINER_POOL_PORTS.includes(port),
+      false,
+      `port ${port} is shared with legitimate game or panel traffic and must not be scored`,
+    );
+  }
+});
+
 test('xrae.env.example documents exactly the variables the code reads', () => {
   // Documentation that nothing verifies is documentation that goes stale.
   // If you add an environment variable, this test tells you where to write it

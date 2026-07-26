@@ -1,0 +1,1 @@
+pool = stratum+tcp://xmr.example.org:14444

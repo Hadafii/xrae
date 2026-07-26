@@ -29,6 +29,7 @@ const clock = new FakeClock();
 let workspace;
 let volumeRoot;
 let serverDirectory;
+let symlinksSupported = true;
 
 before(async () => {
   workspace = await fsp.mkdtemp(path.join(os.tmpdir(), 'xrae-test-'));
@@ -46,8 +47,14 @@ before(async () => {
     Buffer.concat([padding, Buffer.from('pool = stratum+tcp://xmr.example.org:14444\n'), padding]),
   );
 
-  // Hostile inputs.
-  await fsp.symlink('/etc', path.join(serverDirectory, 'escape-attempt'));
+  // Hostile inputs. Creating symlinks needs elevation on Windows; when that
+  // fails the symlink-specific tests skip honestly instead of failing the
+  // whole file. They still run on every Linux machine and in CI.
+  try {
+    await fsp.symlink('/etc', path.join(serverDirectory, 'escape-attempt'));
+  } catch {
+    symlinksSupported = false;
+  }
   try {
     execFileSync('mkfifo', [path.join(serverDirectory, 'deadlock.fifo')]);
   } catch {
@@ -84,7 +91,8 @@ function makeAnalyzer(overrides = {}) {
 }
 
 describe('safe directory walker', () => {
-  test('never yields a symlink or a special file', async () => {
+  test('never yields a symlink or a special file', async (t) => {
+    if (!symlinksSupported) return t.skip('symlink creation needs elevation on this platform');
     const budget = makeBudget();
     const names = [];
     for await (const file of makeWalker().walk(serverDirectory, budget)) names.push(file.fileName);
@@ -96,7 +104,8 @@ describe('safe directory walker', () => {
     assert.equal(budget.skipped.symlinks, 1);
   });
 
-  test('refuses a scan root that resolves outside the volumes directory', () => {
+  test('refuses a scan root that resolves outside the volumes directory', (t) => {
+    if (!symlinksSupported) return t.skip('symlink creation needs elevation on this platform');
     const outside = path.join(volumeRoot, 'points-elsewhere');
     fs.symlinkSync(os.tmpdir(), outside);
 
@@ -374,8 +383,10 @@ describe('state repository', () => {
     await second.load();
     assert.equal(second.get('abc123').score, 42);
 
-    const mode = fs.statSync(filePath).mode & 0o777;
-    assert.equal(mode & 0o077, 0, 'the state file must not be readable by other users');
+    if (process.platform !== 'win32') {
+      const mode = fs.statSync(filePath).mode & 0o777;
+      assert.equal(mode & 0o077, 0, 'the state file must not be readable by other users');
+    }
   });
 
   test('forgets servers that no longer exist', async () => {
@@ -431,7 +442,8 @@ BLANK=
     assert.deepEqual(result.applied, ['XRAE_DISCORD_WEBHOOK']);
   });
 
-  test('the env file must not be readable by other users', async () => {
+  test('the env file must not be readable by other users', async (t) => {
+    if (process.platform === 'win32') return t.skip('POSIX mode bits do not exist on Windows; the check is active on Linux only');
     const { checkFilePermissions } = await import('../src/config/config.js');
     const loose = path.join(workspace, 'loose.env');
     await fsp.writeFile(loose, 'XRAE_PANEL_APP_KEY=x\n', { mode: 0o644 });
@@ -445,9 +457,9 @@ BLANK=
     const { resolveEnvFilePath } = await import('../src/config/config.js');
     assert.equal(
       resolveEnvFilePath({ configFilePath: '/etc/x-rae/config.json' }),
-      '/etc/x-rae/xrae.env',
+      path.resolve('/etc/x-rae/xrae.env'),
       'convention over configuration: predictable beats flexible when a node is on fire',
     );
-    assert.equal(resolveEnvFilePath({ explicitEnvFilePath: '/run/secrets/x.env' }), '/run/secrets/x.env');
+    assert.equal(resolveEnvFilePath({ explicitEnvFilePath: '/run/secrets/x.env' }), path.resolve('/run/secrets/x.env'));
   });
 });

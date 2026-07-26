@@ -220,6 +220,12 @@ function applyEnvironment(config) {
  * @returns {string|null} an error message, or null if the file is fine
  */
 export function checkFilePermissions(filePath, because = 'It holds credentials') {
+  // Windows has no POSIX mode bits - Node reports a fabricated 0666 for every
+  // file, so on win32 this check can only produce false positives. Real
+  // deployments are Linux + systemd, where the check stays fully active;
+  // Windows dev machines rely on NTFS ACLs, which stat() cannot see.
+  if (process.platform === 'win32') return null;
+
   let stat;
   try {
     stat = fs.statSync(filePath);
