@@ -18,14 +18,18 @@ sudo ./install.sh
 Lalu tiga perintah:
 
 ```bash
-sudo xrae init                 # tanya 6 hal, tulis config
-sudo nano /etc/x-rae/xrae.env  # tempel API key di sini
-sudo -u xrae xrae doctor       # buktikan semuanya jalan
+sudo xrae init            # tanya 6 hal, tulis config.json + xrae.env
+sudo -u xrae xrae doctor  # buktikan semuanya jalan
 ```
 
-`doctor` mengecek versi Node, izin file, akses volume, kredensial panel,
-konektivitas, capability opsional, lalu mencetak kebijakan yang sedang berlaku —
-dan memberi tahu cara memperbaiki setiap masalah yang ditemukannya.
+`init` menanyakan pengaturan lalu kredensial, dan menulisnya ke **dua file
+terpisah** — pengaturan ke `config.json` (0644), kredensial ke `xrae.env`
+(0600). Lihat [Konfigurasi](#konfigurasi-dua-file-dua-tugas).
+
+`doctor` mengecek versi Node, izin file, akses volume, konektivitas panel,
+capability opsional, **dari mana setiap kredensial sebenarnya berasal**, lalu
+mencetak kebijakan yang sedang berlaku — dan memberi tahu cara memperbaiki
+setiap masalah yang ditemukannya.
 
 Lihat dulu apa yang akan dilakukannya, tanpa dia melakukan apa pun:
 
@@ -117,21 +121,90 @@ hipotesis yang jauh lebih mungkin adalah detektornya yang rusak.
 
 ---
 
-## Konfigurasi
+## Konfigurasi: dua file, dua tugas
 
-File-nya JSON, dan **komentar `//` diizinkan**. JSON bukan YAML karena YAML butuh
-dependensi npm, dan agent berhak istimewa dengan nol dependensi tidak bisa
-di-backdoor lewat rantai pasok.
+| File | Isi | Mode | Boleh dibagikan? |
+|---|---|---|---|
+| `/etc/x-rae/config.json` | pengaturan | 0644 | **ya** — tempel ke thread support tanpa cemas |
+| `/etc/x-rae/xrae.env` | kredensial | `0640 root:xrae` | **tidak, pernah** |
 
-Rahasia sebaiknya dari environment, bukan dari file:
+X-Rae menemukan `xrae.env` **otomatis** karena letaknya di sebelah
+`config.json`. systemd juga memuatnya lewat `EnvironmentFile=`, jadi
+`xrae doctor` manual dan service yang berjalan melihat nilai yang sama persis.
+
+`xrae init` menulis kedua file itu untukmu. Template-nya ada di
+[`xrae.env.example`](xrae.env.example).
+
+Soal mode `0640 root:xrae` — itu bukan kelalaian. Service jalan sebagai user
+`xrae` yang tidak berhak istimewa, jadi dia **harus** bisa membaca file ini;
+`0600 root:root` membuat unit-nya start lalu gagal autentikasi, dan itu jenis
+bug yang menghabiskan satu jam untuk ditemukan. Group-read juga lebih baik
+daripada menjadikan `xrae` sebagai owner: agent bisa membaca kredensialnya,
+tapi tidak bisa menulisnya ulang. X-Rae tetap menolak start kalau file-nya
+world-readable atau group-writable.
+
+### Urutan prioritas
 
 ```
-XRAE_PANEL_APP_KEY      XRAE_PANEL_CLIENT_KEY      XRAE_DISCORD_WEBHOOK
+1. environment sungguhan   (systemd, atau `export` di shell-mu)   ← menang
+2. xrae.env
+3. config.json
+4. default bawaan
 ```
 
-X-Rae **menolak start** kalau config bisa dibaca user lain, atau kalau
-`panel.url` plaintext http ke host remote. Gagal keras saat boot lebih baik
-daripada bocor diam-diam.
+Variabel yang sudah ada di environment sungguhan **tidak pernah** ditimpa oleh
+file. Itu yang membuat systemd dan menjalankan manual berperilaku identik.
+
+### Menaruh kredensial di dua tempat adalah kesalahan, bukan cadangan
+
+Ini bug senyap yang paling mahal di sistem seperti ini: kamu rotasi key di
+`config.json`, tapi key lama masih ada di environment, jadi **yang lama tetap
+dipakai** dan tidak ada apa pun yang memberitahu.
+
+`xrae doctor` **gagal keras** kalau itu terjadi, dan menyebutkan file mana yang
+menang:
+
+```
+  Credential sources:
+  ✓ panel application key  /etc/x-rae/xrae.env
+  ! panel client key       not set
+  ✓ Discord webhook        environment
+
+  ✗ panel application key is set in BOTH config.json and /etc/x-rae/xrae.env.
+    The env file wins. Remove one of them.
+```
+
+### Variabel yang dikenali
+
+| Variabel | Menggantikan |
+|---|---|
+| `XRAE_PANEL_APP_KEY` | `panel.applicationKey` — **wajib** |
+| `XRAE_PANEL_CLIENT_KEY` | `panel.clientKey` — opsional, untuk bukti CPU |
+| `XRAE_DISCORD_WEBHOOK` | `notify.discordWebhook` — wajib sebelum mode throttle/enforce |
+| `XRAE_PANEL_URL` | `panel.url` |
+| `XRAE_VOLUMES_PATH` | `scanner.volumesPath` |
+| `XRAE_NODE_ID` | `scanner.nodeId` |
+| `XRAE_MODE` | `policy.mode` |
+| `XRAE_LOG_LEVEL` | `logLevel` |
+| `XRAE_STATE_PATH` | `state.path` |
+| `XRAE_CONFIG` | lokasi `config.json` |
+| `XRAE_ENV_FILE` | lokasi file kredensial (mis. `/run/secrets/xrae.env`) |
+
+### Aturan yang membuat X-Rae menolak start
+
+Gagal keras saat boot lebih baik daripada bocor atau bertindak diam-diam.
+
+- `xrae.env` bisa dibaca user lain → **tolak**
+- `config.json` memuat key **dan** bisa dibaca user lain → **tolak**
+  (config.json tanpa kredensial di dalamnya boleh 0644 — memaksa 0600 di situ
+  hanya security theatre yang mengajari operator mengabaikan peringatan)
+- `panel.url` plaintext `http://` ke host remote → **tolak**
+- mode `throttle`/`enforce` tanpa webhook → **tolak**, karena bertindak tanpa
+  memberi tahu siapa pun tidak bisa diterima
+
+File config-nya JSON, dan **komentar `//` diizinkan**. JSON bukan YAML karena
+YAML butuh dependensi npm, dan agent berhak istimewa dengan nol dependensi tidak
+bisa di-backdoor lewat rantai pasok.
 
 Menonaktifkan satu aturan tanpa menyentuh kode:
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+// Entry point. Kept trivial on purpose: all logic lives in src/cli/main.js.
+import { main } from '../src/cli/main.js';
+
+main()
+  .then((exitCode) => process.exit(exitCode ?? 0))
+  .catch((error) => {
+    process.stderr.write(`fatal: ${error.stack ?? error.message}\n`);
+    process.exit(1);
+  });

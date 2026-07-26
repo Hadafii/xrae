@@ -1,21 +1,18 @@
-// X-Rae configuration.
+// X-Rae settings.
+//
 // Comments are allowed here. Anything you leave out uses its default -
 // run "xrae doctor" to see the values actually in effect.
+//
+// CREDENTIALS DO NOT BELONG IN THIS FILE.
+// They live in xrae.env, next to this file. See xrae.env.example.
+// Precedence, highest first:
+//     real environment  ->  xrae.env  ->  this file  ->  defaults
+//
+// You CAN put keys here and it will work, but then this file becomes a secret
+// too and X-Rae will refuse to start unless it is mode 0600.
 {
   "panel": {
-    "url": "https://panel.example.com",
-
-    // Prefer the environment variables XRAE_PANEL_APP_KEY and
-    // XRAE_PANEL_CLIENT_KEY over putting keys in this file.
-    "applicationKey": "",
-
-    // Optional. Only needed for CPU behaviour evidence.
-    "clientKey": ""
-  },
-
-  "notify": {
-    // Or set XRAE_DISCORD_WEBHOOK.
-    "discordWebhook": ""
+    "url": "https://panel.example.com"
   },
 
   "scanner": {
@@ -23,7 +20,7 @@
     "nodeId": 0,
     "intervalMinutes": 15,
 
-    // Needs a clientKey.
+    // Needs XRAE_PANEL_CLIENT_KEY.
     "collectCpu": true,
 
     // Needs permission to read /proc/<pid>/net (CAP_SYS_PTRACE).
@@ -61,11 +58,11 @@
   },
 
   "exclusions": {
-    // Turn off a rule:              ["tunnel.nezha.agent"]
+    // Turn off a rule:                 ["tunnel.nezha.agent"]
     "ruleIds": [],
-    // Never open a file by name:    ["blocklist.txt"]
+    // Never open a file by name:       ["blocklist.txt"]
     "fileNames": [],
-    // Skip an extension:            ["bak", "dump"]
+    // Skip an extension:               ["bak", "dump"]
     "extensions": [],
     // Skip a path inside every volume: ["plugins/HugePlugin"]
     "relativePaths": []

@@ -10,7 +10,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 
-import { loadConfig, DEFAULT_CONFIG, checkFilePermissions, ConfigError } from '../config/config.js';
+import { loadConfig, DEFAULT_CONFIG, checkFilePermissions, resolveEnvFilePath, ConfigError } from '../config/config.js';
 import { buildApplication } from '../composition-root.js';
 import { ConsoleLogger } from '../infrastructure/system/logger.js';
 import { PolicyMode } from '../domain/policy.js';
@@ -19,6 +19,9 @@ import { RULE_PACK, REGEX_RULES, validateRulePack } from '../domain/rules.js';
 const CHECK = '  \x1b[32m✓\x1b[0m';
 const CROSS = '  \x1b[31m✗\x1b[0m';
 const WARN = '  \x1b[33m!\x1b[0m';
+
+/** Must match SERVICE_USER in install.sh and User= in the systemd unit. */
+const SERVICE_GROUP = 'xrae';
 
 function print(line = '') {
   stdout.write(line + '\n');
@@ -33,46 +36,71 @@ function print(line = '') {
  * defaults for the other forty, and writes the file with mode 0600.
  */
 export async function commandInit({ configPath }) {
-  const resolved = path.resolve(configPath);
+  const resolvedConfig = path.resolve(configPath);
+  const resolvedEnv = resolveEnvFilePath({ configFilePath: resolvedConfig });
 
-  if (fs.existsSync(resolved)) {
-    print(`\nA config already exists at ${resolved}`);
+  if (fs.existsSync(resolvedConfig)) {
+    print(`\nA config already exists at ${resolvedConfig}`);
     print('Nothing was changed. Delete it first if you want to start over.\n');
     return 1;
   }
 
   print('\n  X-Rae setup');
   print('  ───────────');
-  print('  Four questions. Everything else gets a safe default.\n');
+  print('  Six questions. Everything else gets a safe default.');
+  print('');
+  print('  Two files get written:');
+  print(`    ${resolvedConfig}   settings   (mode 0644, safe to share)`);
+  print(`    ${resolvedEnv}      credentials (mode 0600, never share)`);
+  print('');
+  print('  Keeping them apart matters: you can paste config.json into a support');
+  print('  thread without leaking a key that controls your whole panel.\n');
 
   const rl = readline.createInterface({ input: stdin, output: stdout });
 
   try {
     const panelUrl = await ask(rl, 'Panel URL', 'https://panel.example.com');
-    const applicationKey = await ask(rl, 'Application API key (ptla_...)', '');
-    const clientKey = await ask(rl, 'Client API key (ptlc_..., optional, enables CPU checks)', '');
-    const webhook = await ask(rl, 'Discord webhook URL (optional)', '');
     const nodeId = await ask(rl, 'Node ID to scan (0 = all nodes this key can see)', '0');
     const volumesPath = await ask(rl, 'Volumes path', DEFAULT_CONFIG.scanner.volumesPath);
 
-    const contents = renderConfigFile({
-      panelUrl: panelUrl.replace(/\/+$/, ''),
-      applicationKey,
-      clientKey,
-      webhook,
-      nodeId: Number(nodeId) || 0,
-      volumesPath,
-    });
+    print('\n  Now the credentials. These go in xrae.env, not config.json.');
+    print('  Leave any of them blank and fill it in later.\n');
 
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.writeFileSync(resolved, contents, { mode: 0o600 });
-    fs.chmodSync(resolved, 0o600);
+    const applicationKey = await ask(rl, 'Application API key (ptla_...)', '');
+    const clientKey = await ask(rl, 'Client API key (ptlc_..., optional, enables CPU checks)', '');
+    const webhook = await ask(rl, 'Discord webhook URL (optional)', '');
 
-    print(`\n${CHECK} wrote ${resolved} (mode 0600)`);
+    fs.mkdirSync(path.dirname(resolvedConfig), { recursive: true });
+
+    fs.writeFileSync(
+      resolvedConfig,
+      renderConfigFile({
+        panelUrl: panelUrl.replace(/\/+$/, ''),
+        nodeId: Number(nodeId) || 0,
+        volumesPath,
+        envFilePath: resolvedEnv,
+      }),
+      { mode: 0o644 },
+    );
+
+    // Never clobber an existing credentials file - it may already hold keys
+    // that the operator does not have another copy of.
+    let envWritten = false;
+    let envMode = '0600';
+    if (fs.existsSync(resolvedEnv)) {
+      print(`\n${WARN} ${resolvedEnv} already exists and was left untouched.`);
+    } else {
+      fs.writeFileSync(resolvedEnv, renderEnvFile({ applicationKey, clientKey, webhook }), { mode: 0o600 });
+      envMode = grantServiceGroupRead(resolvedEnv);
+      envWritten = true;
+    }
+
+    print(`\n${CHECK} wrote ${resolvedConfig} (mode 0644, no secrets in it)`);
+    if (envWritten) print(`${CHECK} wrote ${resolvedEnv} (mode ${envMode})`);
     print('');
     print('  Next:');
-    print(`    xrae doctor --config ${resolved}          check everything works`);
-    print(`    xrae scan --config ${resolved} --dry-run  see what it would do`);
+    print(`    xrae doctor --config ${resolvedConfig}          check everything works`);
+    print(`    xrae scan --config ${resolvedConfig} --dry-run  see what it would do`);
     print('');
     print('  The config starts in "observe" mode. It will not touch any server.');
     print('  Leave it there for a couple of weeks before enabling enforcement.\n');
@@ -82,27 +110,79 @@ export async function commandInit({ configPath }) {
   }
 }
 
+/**
+ * Hand a secrets file to the service group so the unprivileged agent can READ it
+ * while only root can WRITE it.
+ *
+ * Why bother: `xrae init` is run with sudo, so the file lands as root:root 0600.
+ * The service then runs as the "xrae" user and cannot open it - the unit starts
+ * and immediately fails to authenticate, which is a miserable thing to debug.
+ * root:xrae 0640 fixes that without making the agent the owner of its own
+ * credentials.
+ *
+ * @param {string} filePath
+ * @param {string} [groupName]
+ * @returns {string} the mode actually applied, for printing
+ */
+function grantServiceGroupRead(filePath, groupName = SERVICE_GROUP) {
+  const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  if (!runningAsRoot) return '0600';
+
+  const gid = lookupGroupId(groupName);
+  if (gid === null) {
+    // The group does not exist yet, e.g. init was run before install.sh.
+    // 0600 is the safe answer; doctor will tell them what to do next.
+    return '0600';
+  }
+
+  try {
+    fs.chownSync(filePath, 0, gid);
+    fs.chmodSync(filePath, 0o640);
+    return `0640 root:${groupName}`;
+  } catch {
+    return '0600';
+  }
+}
+
+/**
+ * Look up a gid by name. Node has no getgrnam, and X-Rae has no dependencies,
+ * so read /etc/group directly. Returns null if the group is absent.
+ */
+function lookupGroupId(groupName) {
+  try {
+    for (const line of fs.readFileSync('/etc/group', 'utf8').split('\n')) {
+      const [name, , gid] = line.split(':');
+      if (name === groupName && gid) return Number(gid);
+    }
+  } catch {
+    /* not a Linux-like system, or /etc/group unreadable */
+  }
+  return null;
+}
+
 async function ask(rl, question, defaultValue) {
   const suffix = defaultValue ? ` [${defaultValue}]` : '';
   const answer = (await rl.question(`  ${question}${suffix}: `)).trim();
   return answer || defaultValue;
 }
 
-function renderConfigFile({ panelUrl, applicationKey, clientKey, webhook, nodeId, volumesPath }) {
-  return `// X-Rae configuration
-// Comments are allowed in this file. Every setting not listed here uses its
-// default - run "xrae doctor" to see the values in effect.
+function renderConfigFile({ panelUrl, nodeId, volumesPath, envFilePath }) {
+  return `// X-Rae settings.
+//
+// Comments are allowed in this file. Anything not listed here uses its default -
+// run "xrae doctor" to see the values actually in effect.
+//
+// CREDENTIALS DO NOT BELONG IN THIS FILE.
+// They live in ${envFilePath}, which X-Rae loads automatically because it sits
+// next to this file. Precedence, highest first:
+//     real environment  ->  ${path.basename(envFilePath)}  ->  this file  ->  defaults
+//
+// You CAN put keys here (panel.applicationKey and so on) and it will work, but
+// then this file is a secret too, and X-Rae will refuse to start unless it is
+// mode 0600.
 {
   "panel": {
-    "url": ${JSON.stringify(panelUrl)},
-    // Leave these empty and use environment variables instead if you prefer:
-    //   XRAE_PANEL_APP_KEY, XRAE_PANEL_CLIENT_KEY
-    "applicationKey": ${JSON.stringify(applicationKey)},
-    "clientKey": ${JSON.stringify(clientKey)}
-  },
-
-  "notify": {
-    "discordWebhook": ${JSON.stringify(webhook)}
+    "url": ${JSON.stringify(panelUrl)}
   },
 
   "scanner": {
@@ -148,6 +228,31 @@ function renderConfigFile({ panelUrl, applicationKey, clientKey, webhook, nodeId
 `;
 }
 
+function renderEnvFile({ applicationKey, clientKey, webhook }) {
+  const line = (variable, value, note) =>
+    `${note}\n${value ? '' : '# '}${variable}=${value}\n`;
+
+  return `# X-Rae credentials.
+#
+# MODE 0600. Never commit this, never paste it into a support thread.
+# X-Rae loads this file automatically because it sits next to config.json.
+# systemd also loads it via EnvironmentFile=, so both paths behave the same.
+#
+# A value already exported in the real environment overrides anything here.
+
+${line('XRAE_PANEL_APP_KEY', applicationKey, '# Application API key. Full panel admin - treat it like a root password.')}
+${line('XRAE_PANEL_CLIENT_KEY', clientKey, '# Client API key. Optional. Only needed for CPU behaviour evidence.')}
+${line('XRAE_DISCORD_WEBHOOK', webhook, '# Discord webhook. Required before enabling throttle or enforce mode.')}
+# Other variables X-Rae understands, if you prefer them over config.json:
+# XRAE_PANEL_URL=https://panel.example.com
+# XRAE_VOLUMES_PATH=/var/lib/pterodactyl/volumes
+# XRAE_NODE_ID=1
+# XRAE_MODE=observe
+# XRAE_LOG_LEVEL=info
+# XRAE_STATE_PATH=/var/lib/x-rae/state.json
+`;
+}
+
 // ---------------------------------------------------------------------------
 // xrae doctor
 // ---------------------------------------------------------------------------
@@ -188,16 +293,15 @@ export async function commandDoctor({ configPath }) {
     return finishDoctor(failures + 1, warnings);
   }
 
-  const permissionProblem = checkFilePermissions(resolved);
-  if (permissionProblem) {
-    print(`${CROSS} config permissions are unsafe\n      ${permissionProblem.split('\n').join('\n      ')}`);
-    return finishDoctor(failures + 1, warnings);
-  }
-  print(`${CHECK} config file readable and private (${resolved})`);
+  print(`${CHECK} config file found (${resolved})`);
 
   let config;
+  let sources = {};
+  let configWarnings = [];
+  let envFilePath = null;
+  let envFileLoaded = false;
   try {
-    ({ config } = loadConfig({ filePath: resolved }));
+    ({ config, sources, warnings: configWarnings, envFilePath, envFileLoaded } = loadConfig({ filePath: resolved }));
     print(`${CHECK} config is valid`);
   } catch (error) {
     if (error instanceof ConfigError) {
@@ -207,7 +311,31 @@ export async function commandDoctor({ configPath }) {
     throw error;
   }
 
-  // 4. Privilege check
+  // 4. Credentials: where did they actually come from?
+  if (envFileLoaded) {
+    print(`${CHECK} credentials file loaded (${envFilePath})`);
+  } else if (envFilePath && !fs.existsSync(envFilePath)) {
+    print(`${WARN} no credentials file at ${envFilePath}`);
+    print('      that is fine if your keys come from systemd or your shell');
+    warnings += 1;
+  }
+
+  print('');
+  print('  Credential sources:');
+  for (const [label, source] of Object.entries(sources)) {
+    const marker = source === 'not set' ? WARN : CHECK;
+    print(`${marker} ${label.padEnd(22)} ${source}`);
+  }
+  print('');
+
+  // A credential defined in two places is how a rotated key silently fails to
+  // take effect. This is a hard failure, not a note.
+  for (const warning of configWarnings) {
+    print(`${CROSS} ${warning}`);
+    failures += 1;
+  }
+
+  // 5. Privilege check
   if (process.getuid && process.getuid() === 0) {
     print(`${WARN} running as root. X-Rae does not need it - see systemd/x-rae.service`);
     warnings += 1;
@@ -215,7 +343,7 @@ export async function commandDoctor({ configPath }) {
     print(`${CHECK} not running as root`);
   }
 
-  // 5. Volumes directory
+  // 6. Volumes directory
   try {
     const entries = fs.readdirSync(config.scanner.volumesPath);
     print(`${CHECK} volumes directory readable (${entries.length} entries)`);
@@ -225,7 +353,7 @@ export async function commandDoctor({ configPath }) {
     failures += 1;
   }
 
-  // 6. State directory
+  // 7. State directory
   try {
     fs.mkdirSync(path.dirname(config.state.path), { recursive: true });
     fs.accessSync(path.dirname(config.state.path), fs.constants.W_OK);
@@ -237,7 +365,7 @@ export async function commandDoctor({ configPath }) {
 
   const app = buildApplication({ config, dryRun: true, logger: new ConsoleLogger({ level: 'error' }) });
 
-  // 7. Panel connectivity and credentials
+  // 8. Panel connectivity
   try {
     const access = await app.serverRepository.checkAccess();
     print(`${CHECK} panel reachable, key can see ${access.visibleServers} server(s)`);
@@ -253,7 +381,7 @@ export async function commandDoctor({ configPath }) {
     failures += 1;
   }
 
-  // 8. Optional capabilities
+  // 9. Optional capabilities
   if (config.scanner.collectCpu) {
     if (config.panel.clientKey) print(`${CHECK} CPU behaviour checks enabled`);
     else {
@@ -271,14 +399,14 @@ export async function commandDoctor({ configPath }) {
     }
   }
 
-  // 9. Notification
+  // 10. Notification
   if (app.notifier.enabled && config.notify.discordWebhook) print(`${CHECK} Discord webhook configured`);
   else {
     print(`${WARN} no Discord webhook; alerts will only appear in the log`);
     warnings += 1;
   }
 
-  // 10. Policy summary - the part people misconfigure and never notice
+  // 11. Policy summary - the part people misconfigure and never notice
   print('');
   print('  Policy in effect:');
   print(`    mode                  ${config.policy.mode}${config.policy.mode === PolicyMode.OBSERVE ? '  (will not touch any server)' : ''}`);
@@ -306,8 +434,11 @@ function finishDoctor(failures, warnings) {
 // ---------------------------------------------------------------------------
 
 export async function commandScan({ configPath, dryRun, verbose, once }) {
-  const { config } = loadConfig({ filePath: configPath });
+  const { config, warnings } = loadConfig({ filePath: configPath });
   const logger = new ConsoleLogger({ level: verbose ? 'debug' : config.logLevel });
+
+  // A credential set in two places must never be discovered by surprise later.
+  for (const warning of warnings) logger.warn(warning);
 
   const app = buildApplication({ config, dryRun, logger });
 

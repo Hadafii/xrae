@@ -389,3 +389,65 @@ describe('state repository', () => {
     assert.equal(repository.get('drop').score, 0);
   });
 });
+
+describe('credentials: env file versus config.json', () => {
+  test('parses the boring subset and nothing more', async () => {
+    const { parseEnvFile } = await import('../src/config/env-file.js');
+
+    const parsed = parseEnvFile(`
+# a comment
+XRAE_PANEL_APP_KEY=ptla_plain
+export XRAE_PANEL_CLIENT_KEY="ptlc_quoted"
+XRAE_DISCORD_WEBHOOK='https://discord.com/api/webhooks/1/tok'
+XRAE_MODE=observe   # trailing comment
+NOT VALID=ignored
+BLANK=
+`);
+
+    assert.equal(parsed.XRAE_PANEL_APP_KEY, 'ptla_plain');
+    assert.equal(parsed.XRAE_PANEL_CLIENT_KEY, 'ptlc_quoted');
+    assert.equal(parsed.XRAE_DISCORD_WEBHOOK, 'https://discord.com/api/webhooks/1/tok');
+    assert.equal(parsed.XRAE_MODE, 'observe', 'a trailing comment must be stripped');
+    assert.equal(parsed.BLANK, '');
+    assert.equal('NOT VALID' in parsed, false);
+  });
+
+  test('keeps a hash that is part of the value', async () => {
+    const { parseEnvFile } = await import('../src/config/env-file.js');
+    assert.equal(parseEnvFile('KEY=abc#def').KEY, 'abc#def', 'a # with no space before it is data, not a comment');
+  });
+
+  test('the real environment always wins over the file', async () => {
+    const { loadEnvFileInto } = await import('../src/config/env-file.js');
+    const envFile = path.join(workspace, 'creds.env');
+    await fsp.writeFile(envFile, 'XRAE_PANEL_APP_KEY=from_file\nXRAE_DISCORD_WEBHOOK=from_file\n', { mode: 0o600 });
+
+    const fakeEnvironment = { XRAE_PANEL_APP_KEY: 'from_real_env' };
+    const result = loadEnvFileInto(envFile, fakeEnvironment);
+
+    assert.equal(fakeEnvironment.XRAE_PANEL_APP_KEY, 'from_real_env', 'systemd and the shell must not be overridden');
+    assert.equal(fakeEnvironment.XRAE_DISCORD_WEBHOOK, 'from_file');
+    assert.deepEqual(result.alreadySet, ['XRAE_PANEL_APP_KEY']);
+    assert.deepEqual(result.applied, ['XRAE_DISCORD_WEBHOOK']);
+  });
+
+  test('the env file must not be readable by other users', async () => {
+    const { checkFilePermissions } = await import('../src/config/config.js');
+    const loose = path.join(workspace, 'loose.env');
+    await fsp.writeFile(loose, 'XRAE_PANEL_APP_KEY=x\n', { mode: 0o644 });
+
+    assert.match(checkFilePermissions(loose) ?? '', /must not be\s+readable by other users|chmod 600/);
+    await fsp.chmod(loose, 0o600);
+    assert.equal(checkFilePermissions(loose), null);
+  });
+
+  test('the env file is looked for next to config.json', async () => {
+    const { resolveEnvFilePath } = await import('../src/config/config.js');
+    assert.equal(
+      resolveEnvFilePath({ configFilePath: '/etc/x-rae/config.json' }),
+      '/etc/x-rae/xrae.env',
+      'convention over configuration: predictable beats flexible when a node is on fire',
+    );
+    assert.equal(resolveEnvFilePath({ explicitEnvFilePath: '/run/secrets/x.env' }), '/run/secrets/x.env');
+  });
+});

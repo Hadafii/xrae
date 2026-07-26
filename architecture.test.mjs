@@ -158,3 +158,42 @@ test('every detection rule declares when it is wrong', async () => {
     );
   }
 });
+
+test('xrae.env.example documents exactly the variables the code reads', () => {
+  // Documentation that nothing verifies is documentation that goes stale.
+  // If you add an environment variable, this test tells you where to write it
+  // down; if you delete one, it tells you to stop advertising it.
+  const projectRoot = path.join(SOURCE_ROOT, '..');
+  const collect = (text) => new Set(text.match(/XRAE_[A-Z_]+/g) ?? []);
+
+  const documented = collect(fs.readFileSync(path.join(projectRoot, 'xrae.env.example'), 'utf8'));
+  const readByCode = collect(
+    fs.readFileSync(path.join(SOURCE_ROOT, 'config', 'config.js'), 'utf8') +
+      fs.readFileSync(path.join(SOURCE_ROOT, 'cli', 'main.js'), 'utf8'),
+  );
+
+  const undocumented = [...readByCode].filter((name) => !documented.has(name)).sort();
+  const stale = [...documented].filter((name) => !readByCode.has(name)).sort();
+
+  assert.deepEqual(undocumented, [], `read by the code but missing from xrae.env.example: ${undocumented.join(', ')}`);
+  assert.deepEqual(stale, [], `advertised in xrae.env.example but ignored by the code: ${stale.join(', ')}`);
+});
+
+test('the env template does not use shell syntax systemd will silently ignore', () => {
+  // systemd's EnvironmentFile is not a shell script. `export FOO=bar` sets a
+  // variable literally named "export FOO", and the failure is invisible - the
+  // service starts and then cannot authenticate. Catch it in the template.
+  const template = fs.readFileSync(path.join(SOURCE_ROOT, '..', 'xrae.env.example'), 'utf8');
+
+  const offendingLines = template
+    .split('\n')
+    .map((line, index) => ({ line, number: index + 1 }))
+    .filter(({ line }) => {
+      const active = line.trim();
+      if (active === '' || active.startsWith('#')) return false;
+      return /^export\s/.test(active) || /=\S*\$\{?[A-Za-z_]/.test(active) || /=.*\s+#/.test(active);
+    })
+    .map(({ line, number }) => `line ${number}: ${line}`);
+
+  assert.deepEqual(offendingLines, [], `\n${offendingLines.join('\n')}\n`);
+});

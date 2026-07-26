@@ -4,6 +4,16 @@
 //
 // Two deliberate choices:
 //
+// 0. THERE ARE TWO FILES, AND THEY HAVE DIFFERENT JOBS.
+//      config.json   settings. Safe to read, safe to share, safe to commit.
+//      xrae.env      credentials. Mode 0600, never shared.
+//
+//    Precedence, highest wins: real environment -> xrae.env -> config.json ->
+//    defaults. `xrae doctor` prints where each credential actually came from,
+//    because a key set in two places with different values is a real footgun:
+//    you rotate the one in config.json, the stale one in the environment keeps
+//    winning, and nothing tells you.
+//
 // 1. THE FILE IS JSON, WITH // COMMENTS ALLOWED.
 //    Not YAML. YAML would mean an npm dependency, and X-Rae has zero of those
 //    on purpose - a privileged agent with no supply chain cannot be backdoored
@@ -16,6 +26,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { loadEnvFileInto } from './env-file.js';
 import { PolicyMode } from '../domain/policy.js';
 import { Confidence, isValidConfidence } from '../domain/confidence.js';
 
@@ -100,6 +111,16 @@ export const DEFAULT_CONFIG = {
     maxCacheEntries: 50000,
   },
 };
+
+/**
+ * The settings that doctor reports a source for. These are the ones people set
+ * in more than one place and then lose track of.
+ */
+export const TRACKED_SECRETS = [
+  { label: 'panel application key', variable: 'XRAE_PANEL_APP_KEY', keyPath: ['panel', 'applicationKey'] },
+  { label: 'panel client key', variable: 'XRAE_PANEL_CLIENT_KEY', keyPath: ['panel', 'clientKey'] },
+  { label: 'Discord webhook', variable: 'XRAE_DISCORD_WEBHOOK', keyPath: ['notify', 'discordWebhook'] },
+];
 
 /** Secrets belong in the environment, not in a file on disk. */
 const ENVIRONMENT_OVERRIDES = [
@@ -187,10 +208,18 @@ function applyEnvironment(config) {
 }
 
 /**
- * Refuse a secrets file other local users can read.
- * A Pterodactyl application key is full panel admin. 0600 is not a preference.
+ * Refuse a file that other local users can read.
+ *
+ * Applied to xrae.env unconditionally, and to config.json ONLY when that file
+ * actually contains a credential. A settings file with no secrets in it is
+ * meant to be readable - insisting on 0600 there would be security theatre that
+ * teaches operators to ignore the warning.
+ *
+ * @param {string} filePath
+ * @param {string} [because] appended to the message, explaining what leaks
+ * @returns {string|null} an error message, or null if the file is fine
  */
-export function checkFilePermissions(filePath) {
+export function checkFilePermissions(filePath, because = 'It holds credentials') {
   let stat;
   try {
     stat = fs.statSync(filePath);
@@ -198,11 +227,37 @@ export function checkFilePermissions(filePath) {
     return null;
   }
   const mode = stat.mode & 0o777;
-  if ((mode & 0o077) === 0) return null;
+
+  // What we actually care about, in order of severity:
+  //
+  //   other-anything  any local user can read a panel admin key. Never allowed.
+  //   group-write     the service user could rewrite its own credentials.
+  //                   Never allowed.
+  //   group-read      ALLOWED, and in fact the recommended deployment. The
+  //                   service runs as an unprivileged user, so it has to be able
+  //                   to read this file. root:xrae 0640 lets it read and not
+  //                   write, which is stricter than making the service the owner.
+  //
+  // Demanding 0600 here looks tighter but is worse in practice: it forces the
+  // file to be owned by the service user, which means a compromised agent can
+  // rewrite its own config.
+  const worldAccess = mode & 0o007;
+  const groupWrite = mode & 0o020;
+
+  if (!worldAccess && !groupWrite) return null;
+
+  const problem = worldAccess ? 'is accessible to all local users' : 'is group-writable';
   return (
-    `${filePath} has mode 0${mode.toString(8)}. It can hold panel admin credentials and must not be ` +
-    `readable by other users. Fix it with:\n    chmod 600 ${filePath}`
+    `${filePath} has mode 0${mode.toString(8)} and ${problem}. ${because}.\n` +
+    `    Fix it with one of:\n` +
+    `      sudo chown root:xrae ${filePath} && sudo chmod 640 ${filePath}   # service reads, only root writes\n` +
+    `      sudo chmod 600 ${filePath}                                       # if you run X-Rae as root's own user`
   );
+}
+
+/** Does this config object contain anything that must stay private? */
+export function containsSecrets(fromFile) {
+  return TRACKED_SECRETS.some((secret) => Boolean(readValueAt(fromFile, secret.keyPath)));
 }
 
 function validate(config) {
@@ -284,12 +339,81 @@ function normalise(config) {
 }
 
 /**
+ * Where to look for the credentials file.
+ *
+ * Convention over configuration: it sits next to config.json and is called
+ * xrae.env. Predictable beats flexible for something an operator has to find
+ * while a node is on fire.
+ *
+ * @param {object} options
+ * @param {string} [options.configFilePath]
+ * @param {string} [options.explicitEnvFilePath]
+ * @returns {string|null}
+ */
+export function resolveEnvFilePath({ configFilePath, explicitEnvFilePath } = {}) {
+  if (explicitEnvFilePath) return path.resolve(explicitEnvFilePath);
+  if (process.env.XRAE_ENV_FILE) return path.resolve(process.env.XRAE_ENV_FILE);
+  if (configFilePath) return path.join(path.dirname(path.resolve(configFilePath)), 'xrae.env');
+  return null;
+}
+
+function readValueAt(object, keyPath) {
+  let cursor = object;
+  for (const key of keyPath) {
+    if (cursor === undefined || cursor === null) return undefined;
+    cursor = cursor[key];
+  }
+  return cursor;
+}
+
+/**
+ * Work out where each credential actually came from, and flag any that are set
+ * in two places at once.
+ */
+function describeSecretSources({ fromFile, envFilePath, envFileResult, preexistingEnv }) {
+  const sources = {};
+  const conflicts = [];
+
+  for (const secret of TRACKED_SECRETS) {
+    const inRealEnv = Boolean(preexistingEnv[secret.variable]);
+    const inEnvFile = envFileResult?.applied.includes(secret.variable) ?? false;
+    const shadowedInEnvFile = envFileResult?.alreadySet.includes(secret.variable) ?? false;
+    const inConfigFile = Boolean(readValueAt(fromFile, secret.keyPath));
+
+    if (inRealEnv) sources[secret.label] = 'environment';
+    else if (inEnvFile) sources[secret.label] = envFilePath ?? 'env file';
+    else if (inConfigFile) sources[secret.label] = 'config.json';
+    else sources[secret.label] = 'not set';
+
+    // Two definitions of the same credential is how a rotated key silently
+    // fails to take effect. Say so loudly.
+    if (inRealEnv && inConfigFile) {
+      conflicts.push(
+        `${secret.label} is set in BOTH config.json and the environment. The environment wins, ` +
+          `so editing config.json will appear to do nothing. Remove one of them.`,
+      );
+    } else if (shadowedInEnvFile && inConfigFile) {
+      conflicts.push(
+        `${secret.label} is set in BOTH config.json and ${envFilePath}. The env file wins. Remove one of them.`,
+      );
+    } else if (inEnvFile && inConfigFile) {
+      conflicts.push(
+        `${secret.label} is set in BOTH config.json and ${envFilePath}. The env file wins. Remove one of them.`,
+      );
+    }
+  }
+
+  return { sources, conflicts };
+}
+
+/**
  * @param {object} [options]
  * @param {string} [options.filePath]
- * @param {boolean} [options.skipValidation] used by `xrae init`
- * @returns {{config: object, warnings: string[]}}
+ * @param {string} [options.envFilePath]      override the xrae.env location
+ * @param {boolean} [options.skipValidation]  used by `xrae init`
+ * @returns {{config: object, warnings: string[], sources: Record<string,string>, envFilePath: string|null, envFileLoaded: boolean}}
  */
-export function loadConfig({ filePath, skipValidation = false } = {}) {
+export function loadConfig({ filePath, envFilePath, skipValidation = false } = {}) {
   const warnings = [];
   let fromFile = {};
 
@@ -301,17 +425,56 @@ export function loadConfig({ filePath, skipValidation = false } = {}) {
       );
     }
 
-    const permissionProblem = checkFilePermissions(resolved);
-    if (permissionProblem) throw new ConfigError(permissionProblem);
-
     try {
       fromFile = JSON.parse(stripJsonComments(fs.readFileSync(resolved, 'utf8'))) ?? {};
     } catch (error) {
       throw new ConfigError(`Config file is not valid JSON: ${error.message}`);
     }
+
+    // Only a config that actually holds a key needs to be locked down. One that
+    // just holds settings is meant to be readable and shareable.
+    if (containsSecrets(fromFile)) {
+      const permissionProblem = checkFilePermissions(
+        resolved,
+        'It contains an API key or webhook (move those to xrae.env instead)',
+      );
+      if (permissionProblem) throw new ConfigError(permissionProblem);
+    }
   }
+
+  // Snapshot the real environment BEFORE the env file touches it, so we can
+  // tell the two apart when reporting sources.
+  const preexistingEnv = { ...process.env };
+
+  const resolvedEnvFile = resolveEnvFilePath({ configFilePath: filePath, explicitEnvFilePath: envFilePath });
+  let envFileResult = null;
+
+  if (resolvedEnvFile && fs.existsSync(resolvedEnvFile)) {
+    const permissionProblem = checkFilePermissions(resolvedEnvFile, 'It holds panel admin credentials');
+    if (permissionProblem) throw new ConfigError(permissionProblem);
+    try {
+      envFileResult = loadEnvFileInto(resolvedEnvFile);
+    } catch (error) {
+      throw new ConfigError(`Could not read ${resolvedEnvFile}: ${error.message}`);
+    }
+  }
+
+  const { sources, conflicts } = describeSecretSources({
+    fromFile,
+    envFilePath: resolvedEnvFile,
+    envFileResult,
+    preexistingEnv,
+  });
+  warnings.push(...conflicts);
 
   const config = normalise(applyEnvironment(deepMerge(DEFAULT_CONFIG, fromFile)));
   if (!skipValidation) validate(config);
-  return { config, warnings };
+
+  return {
+    config,
+    warnings,
+    sources,
+    envFilePath: resolvedEnvFile,
+    envFileLoaded: envFileResult !== null,
+  };
 }

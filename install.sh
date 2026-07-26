@@ -24,7 +24,8 @@ step() { printf '  ==> %s\n' "$*"; }
 printf '\n  X-Rae installer\n  ───────────────\n\n'
 
 [[ $EUID -eq 0 ]] || die "run this with sudo (the service itself runs unprivileged)"
-[[ -f "$SOURCE_DIR/bin/xrae" ]] || die "run this from inside the x-rae directory"
+[[ -f "$SOURCE_DIR/bin/xrae" && -f "$SOURCE_DIR/xrae.env.example" ]] \
+  || die "run this from inside the x-rae directory"
 
 # ---------------------------------------------------------------------------
 # 1. Node.js
@@ -83,23 +84,26 @@ chmod 755 /usr/local/bin/xrae
 step "installed the xrae command"
 
 # ---------------------------------------------------------------------------
-# 4. Secrets file
+# 5. Secrets file
 # ---------------------------------------------------------------------------
-if [[ ! -f "$CONF_DIR/xrae.env" ]]; then
-  cat > "$CONF_DIR/xrae.env" <<'EOF'
-# Credentials for X-Rae. Uncomment and fill in.
-# Keeping them here rather than in config.json means they never appear in a
-# file you might paste into a chat when asking for help.
-# XRAE_PANEL_APP_KEY=ptla_...
-# XRAE_PANEL_CLIENT_KEY=ptlc_...
-# XRAE_DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
-EOF
+# Copied from xrae.env.example rather than written inline here, so there is one
+# source of truth. Duplicated content drifts.
+if [[ -f "$CONF_DIR/xrae.env" ]]; then
+  step "keeping existing $CONF_DIR/xrae.env"
+else
+  step "creating $CONF_DIR/xrae.env from the example"
+  cp "$SOURCE_DIR/xrae.env.example" "$CONF_DIR/xrae.env"
 fi
+
+# Readable by the service user, writable only by root.
 chown root:"$SERVICE_USER" "$CONF_DIR/xrae.env"
 chmod 640 "$CONF_DIR/xrae.env"
 
+# Keep the example on disk too, as reference documentation.
+install -m 0644 "$SOURCE_DIR/xrae.env.example" "$APP_DIR/xrae.env.example"
+
 # ---------------------------------------------------------------------------
-# 5. systemd
+# 6. systemd
 # ---------------------------------------------------------------------------
 # The old SonarX printed the `pm2 startup` command without running it, so the
 # agent silently vanished on the next reboot while operators believed it was

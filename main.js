@@ -34,8 +34,19 @@ const HELP = `
     systemctl start x-rae
 
   SECRETS
-    These environment variables override the config file:
-      XRAE_PANEL_APP_KEY  XRAE_PANEL_CLIENT_KEY  XRAE_DISCORD_WEBHOOK
+    Credentials live in "xrae.env", NEXT TO your config.json. X-Rae finds and
+    loads it automatically - systemd loads the same file via EnvironmentFile=,
+    so a manual run and the running service see identical values.
+
+      /etc/x-rae/config.json  ->  /etc/x-rae/xrae.env
+
+    Keep it somewhere else with:  XRAE_ENV_FILE=/run/secrets/xrae.env
+    A real environment variable always wins over the file.
+
+    Recognised: XRAE_PANEL_URL, XRAE_PANEL_APP_KEY, XRAE_PANEL_CLIENT_KEY,
+    XRAE_DISCORD_WEBHOOK, XRAE_VOLUMES_PATH, XRAE_NODE_ID, XRAE_MODE,
+    XRAE_LOG_LEVEL, XRAE_STATE_PATH, XRAE_CONFIG, XRAE_ENV_FILE.
+    See xrae.env.example for what each one does.
 `;
 
 function parseArguments(argv) {

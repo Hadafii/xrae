@@ -1,0 +1,17 @@
+# Never commit these. The whole point of splitting credentials out of
+# config.json is defeated if the env file ends up in git history, and history is
+# very hard to clean once it is pushed.
+xrae.env
+*.env
+!*.env.example
+.env
+
+# Live config and runtime state.
+config.json
+state.json
+*.state.json
+*.corrupt.*
+
+node_modules/
+npm-debug.log*
+.DS_Store
