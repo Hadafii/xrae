@@ -9,7 +9,13 @@ Type=simple
 User=xrae
 Group=xrae
 WorkingDirectory=/opt/x-rae
-ExecStart=/usr/bin/node /opt/x-rae/bin/xrae run --config /etc/x-rae/config.json
+# --jitless is load-bearing: MemoryDenyWriteExecute below forbids the
+# writable->executable page flips V8's JIT needs, and Node dies with a fatal
+# SetPermissions check without it. Jitless V8 never allocates executable
+# memory, so the W^X mitigation stays - valuable for a process that parses
+# attacker-controlled files. If cycles ever get too slow on a huge node,
+# remove --jitless AND MemoryDenyWriteExecute together, never just one.
+ExecStart=/usr/bin/node --jitless /opt/x-rae/bin/xrae run --config /etc/x-rae/config.json
 
 # Credentials live here, not in config.json.
 EnvironmentFile=-/etc/x-rae/xrae.env
