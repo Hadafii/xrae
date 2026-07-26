@@ -230,6 +230,12 @@ not make them without the user explicitly asking, and push back when asked.
 - Enforcement gate before `enforce` mode is ever enabled: a red-team exercise
   where an engineer is given a tenant volume and the task "get another tenant
   suspended". If they succeed, the design is not ready.
+- The process collector (`collectors/process-collector.js`) reads
+  `/proc/<pid>/cmdline` and the exe target to catch a running miner that evaded
+  the on-disk scan (packed binary, pool URL in argv, TLS on 443). Its evidence
+  is the BEHAVIOR family; the family cap lifted 30 -> 40 so a corroborated
+  CRITICAL miner can cross the threshold. Single-family behavior still cannot
+  self-suspend. See the regression tests in domain.test.mjs.
 - `WingsEnforcer` for CPU throttling is the highest-value next feature.
 - W^X (`MemoryDenyWriteExecute`) is off in the systemd unit: V8's JIT and
   undici's WASM HTTP parser both need W+X pages. To earn it back, swap the

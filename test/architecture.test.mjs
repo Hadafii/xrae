@@ -149,13 +149,27 @@ test('only the composition root decides which concrete adapter is used', () => {
 
 test('every detection rule declares when it is wrong', async () => {
   // The fpProfile field is what stops the rule pack filling up with guesses.
-  const { RULE_PACK, REGEX_RULES } = await import('../src/domain/rules.js');
+  const { RULE_PACK, REGEX_RULES, PROCESS_RULES } = await import('../src/domain/rules.js');
 
-  for (const rule of [...RULE_PACK, ...REGEX_RULES]) {
+  for (const rule of [...RULE_PACK, ...REGEX_RULES, ...PROCESS_RULES]) {
     assert.ok(
       rule.fpProfile && rule.fpProfile.length >= 10,
       `rule "${rule.id}" has no usable fpProfile. Describe when this rule fires on an innocent server.`,
     );
+  }
+});
+
+test('process rules validate and standalone ones are critical', async () => {
+  // A standalone rule can raise an alert on its own, so it must be CRITICAL.
+  const { PROCESS_RULES, validateRulePack } = await import('../src/domain/rules.js');
+  const { Confidence } = await import('../src/domain/confidence.js');
+
+  assert.doesNotThrow(() => validateRulePack(PROCESS_RULES));
+
+  for (const rule of PROCESS_RULES) {
+    if (rule.standalone) {
+      assert.equal(rule.confidence, Confidence.CRITICAL, `standalone process rule "${rule.id}" must be CRITICAL`);
+    }
   }
 });
 

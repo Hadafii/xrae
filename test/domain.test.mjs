@@ -130,6 +130,37 @@ describe('scoring', () => {
     assert.equal(verdict.families.length, 4);
   });
 
+  test('a corroborated live miner crosses the threshold and is suspendable', () => {
+    // Regression guard for the real incident: a running xmrig (behavior,
+    // standalone CRITICAL) corroborated by a pool signature on disk and a
+    // packed binary must score high enough to act on, not stall below 100.
+    const verdict = calculator.calculate({
+      evidence: [
+        evidence(EvidenceFamily.BEHAVIOR, 55, Confidence.CRITICAL, true),  // --donate-level
+        evidence(EvidenceFamily.SIGNATURE, 40, Confidence.HIGH),           // supportxmr in a config
+        evidence(EvidenceFamily.ENTROPY, 20, Confidence.MEDIUM),           // packed binary
+      ],
+      previous: noHistory,
+      nowMs: NOW,
+    });
+    assert.ok(verdict.totalScore >= 100, `a corroborated miner must be suspendable, got ${verdict.totalScore}`);
+    assert.equal(verdict.confidence, Confidence.CRITICAL);
+    assert.ok(verdict.hasStandalone);
+  });
+
+  test('a live miner that left no disk trace still alerts but does not self-suspend', () => {
+    // Fully evasive case: behavior family only. Capped below the threshold, so
+    // no auto-suspend - but standalone CRITICAL keeps it reportable.
+    const verdict = calculator.calculate({
+      evidence: [evidence(EvidenceFamily.BEHAVIOR, 55, Confidence.CRITICAL, true)],
+      previous: noHistory,
+      nowMs: NOW,
+    });
+    assert.ok(verdict.totalScore < 100, 'a single family must not reach the suspend threshold alone');
+    assert.equal(verdict.confidence, Confidence.CRITICAL);
+    assert.ok(verdict.hasStandalone, 'but it is still reportable, so an alert fires');
+  });
+
   test('an unambiguous indicator is not discounted', () => {
     const verdict = calculator.calculate({
       evidence: [evidence(EvidenceFamily.SIGNATURE, 55, Confidence.CRITICAL, true)],

@@ -1,1 +1,39 @@
-pool = stratum+tcp://xmr.example.org:14444
+sudo -u xrae stat /var/lib/pterodactyl/volumes   # bakal "Permission denied" kalau diagnosis benar
+drwx------  5 root root 4096 Jul 26 18:32 /var/lib/pterodactyl
+drwx------ 62 root root 4096 Jul 26 09:24 /var/lib/pterodactyl/volumes
+stat: cannot statx '/var/lib/pterodactyl/volumes': Permission denied
+root@basic5-baremetal:~/x-rae# xrae doctor --config /etc/x-rae/config.json
+
+  X-Rae health check
+  ──────────────────
+
+  ✓ Node.js 22.23.1
+  ✓ rule pack valid (30 text rules, 2 pattern rules)
+  ✓ config file found (/etc/x-rae/config.json)
+  ✓ config is valid
+  ✓ credentials file loaded (/etc/x-rae/xrae.env)
+
+  Credential sources:
+  ✓ panel application key  /etc/x-rae/xrae.env
+  ✓ panel client key       /etc/x-rae/xrae.env
+  ✓ Discord webhook        /etc/x-rae/xrae.env
+
+  ! running as root. X-Rae does not need it - see systemd/x-rae.service
+  ✓ volumes directory readable (60 entries)
+  ✓ state directory writable (/var/lib/x-rae)
+  ✓ panel reachable, key can see 932 server(s)
+  ✓ CPU behaviour checks enabled
+  ✓ network attribution available
+  ✓ Discord webhook configured
+
+  Policy in effect:
+    mode                  observe  (will not touch any server)
+    risk threshold        100
+    suspend needs         critical confidence, 2 consecutive cycle(s)
+    max actions / cycle   3
+    anomaly abort         above 25% of the node tripping
+    score half-life       24h
+
+  Ready. 1 warning(s) - optional features are inactive.
+
+root@basic5-baremetal:~/x-rae#

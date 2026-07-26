@@ -118,4 +118,34 @@ export class ContainerProcessResolver {
       return '';
     }
   }
+
+  /**
+   * The process's launch arguments, exactly as the kernel kept them. This is
+   * the one place a miner's real pool URL and wallet survive even when the
+   * binary is packed and the config is passed on the command line - both were
+   * used to evade the on-disk scanner in a real incident.
+   * @returns {Promise<string>} space-joined argv, or '' if unreadable
+   */
+  async readCmdline(pid) {
+    try {
+      const raw = await fsp.readFile(`/proc/${pid}/cmdline`, 'utf8');
+      return raw.replace(/\0/g, ' ').trim();
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * The real path of the running binary, following the exe symlink. Survives
+   * an attacker renaming argv[0], and reveals a hidden location such as
+   * plugins/.data/xmrig.
+   * @returns {Promise<string>} the target path, or '' if unreadable
+   */
+  async readExeTarget(pid) {
+    try {
+      return await fsp.readlink(`/proc/${pid}/exe`);
+    } catch {
+      return '';
+    }
+  }
 }

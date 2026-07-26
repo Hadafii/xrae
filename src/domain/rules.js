@@ -126,10 +126,17 @@ export const RULE_PACK = [
  *
  * @type {Array<Rule & {regex: RegExp, family: string, detail: string}>}
  */
+/**
+ * A Monero address: base58, 95 chars, starts 4 or 8. Shared between the
+ * on-disk regex scan and the live-process scan so both agree on what a wallet
+ * looks like.
+ */
+export const MONERO_WALLET_REGEX = /\b[48][0-9AB][1-9A-HJ-NP-Za-km-z]{93}\b/;
+
 export const REGEX_RULES = [
   {
     id: 'miner.wallet.monero',
-    regex: /\b[48][0-9AB][1-9A-HJ-NP-Za-km-z]{93}\b/,
+    regex: MONERO_WALLET_REGEX,
     family: EvidenceFamily.STRUCTURE,
     category: 'MINER',
     weight: 50,
@@ -151,6 +158,77 @@ export const REGEX_RULES = [
     fpProfile: 'Any JSON config with both a "url" and a "user" field nearby - e.g. a database config.',
     pattern: '(regex)',
   },
+];
+
+/**
+ * ============================================================================
+ * LIVE-PROCESS RULES - matched against /proc/<pid>/cmdline and the exe target
+ * ============================================================================
+ * These exist because content scanning alone missed a real miner: the binary
+ * was packed (so its strings never appeared in plaintext) and the pool URL and
+ * wallet were passed as command-line arguments, never written to a file.
+ *
+ * A RUNNING process is a much stronger subject than a file on disk. The word
+ * "xmrig" in a file might be a blocklist; a process whose executable IS xmrig,
+ * launched with --donate-level against a mining pool, is not ambiguous. That is
+ * why several of these are standalone in the process context even though the
+ * same string is not standalone as file content.
+ *
+ * Family is BEHAVIOR, which is capped at 30 in scoring. That cap is deliberate:
+ * one family should not auto-suspend alone. But standalone+CRITICAL still makes
+ * a finding REPORTABLE, so a live miner always raises an alert even when the
+ * score is capped, and auto-suspend still requires corroboration + threshold.
+ *
+ * @type {Rule[]}
+ */
+export const PROCESS_RULES = [
+  { id: 'process.miner.stratum.tcp', pattern: 'stratum+tcp://', category: 'MINER', weight: 60, confidence: CRITICAL, standalone: true,
+    detail: 'live process speaking the stratum mining protocol',
+    fpProfile: 'A running process using stratum. The only benign case is an operator deliberately mining, which is exactly what we want reported.' },
+  { id: 'process.miner.stratum.ssl', pattern: 'stratum+ssl://', category: 'MINER', weight: 60, confidence: CRITICAL, standalone: true,
+    detail: 'live process speaking stratum over TLS',
+    fpProfile: 'Same as the plain stratum case; a live mining connection, not file content.' },
+  { id: 'process.miner.donate_level', pattern: '--donate-level', category: 'MINER', weight: 55, confidence: CRITICAL, standalone: true,
+    detail: 'xmrig donate-level flag on a running process',
+    fpProfile: 'The xmrig/xmr-stak donate flag on a live command line. A game server never passes it; a mining benchmark would, and should be flagged.' },
+  { id: 'process.miner.wallet.monero', regex: MONERO_WALLET_REGEX, pattern: '(regex)', category: 'MINER', weight: 55, confidence: CRITICAL, standalone: true,
+    detail: 'Monero wallet address passed as a process argument',
+    fpProfile: 'A 95-char base58 Monero address in live argv. Astronomically unlikely to occur by chance.' },
+
+  { id: 'process.miner.pool.supportxmr', pattern: 'supportxmr.com', category: 'MINER', weight: 45, confidence: HIGH, standalone: false,
+    detail: 'connecting to the supportxmr mining pool', fpProfile: 'A monitoring tool referencing the pool host. Non-standalone so corroboration is required to act.' },
+  { id: 'process.miner.pool.moneroocean', pattern: 'moneroocean.stream', category: 'MINER', weight: 45, confidence: HIGH, standalone: false,
+    detail: 'connecting to the MoneroOcean mining pool', fpProfile: 'Same as supportxmr: a pool hostname in arguments.' },
+  { id: 'process.miner.pool.nanopool', pattern: 'nanopool.org', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'connecting to the Nanopool mining pool', fpProfile: 'A pool hostname in arguments; non-standalone.' },
+  { id: 'process.miner.pool.hashvault', pattern: 'hashvault.pro', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'connecting to the HashVault mining pool', fpProfile: 'A pool hostname in arguments; non-standalone.' },
+  { id: 'process.miner.pool.herominers', pattern: 'herominers.com', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'connecting to a HeroMiners mining pool', fpProfile: 'A pool hostname in arguments; non-standalone.' },
+  { id: 'process.miner.pool.nicehash', pattern: 'nicehash.com', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'connecting to the NiceHash marketplace', fpProfile: 'A pool hostname in arguments; non-standalone.' },
+
+  { id: 'process.miner.bin.xmrig', pattern: 'xmrig', category: 'MINER', weight: 45, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named xmrig', fpProfile: 'A process whose binary is named like a known miner. Non-standalone: a researcher could run one, so corroboration is required.' },
+  { id: 'process.miner.bin.xmrstak', pattern: 'xmr-stak', category: 'MINER', weight: 45, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named xmr-stak', fpProfile: 'A known miner binary name; non-standalone.' },
+  { id: 'process.miner.bin.cpuminer', pattern: 'cpuminer', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named cpuminer', fpProfile: 'A known miner binary name; non-standalone.' },
+  { id: 'process.miner.bin.minerd', pattern: 'minerd', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named minerd', fpProfile: 'A known miner binary name; non-standalone.' },
+  { id: 'process.miner.bin.trex', pattern: 't-rex', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named t-rex', fpProfile: 'A known GPU miner binary name; non-standalone.' },
+  { id: 'process.miner.bin.nbminer', pattern: 'nbminer', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named nbminer', fpProfile: 'A known GPU miner binary name; non-standalone.' },
+  { id: 'process.miner.bin.phoenixminer', pattern: 'phoenixminer', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named phoenixminer', fpProfile: 'A known GPU miner binary name; non-standalone.' },
+  { id: 'process.miner.bin.lolminer', pattern: 'lolminer', category: 'MINER', weight: 40, confidence: HIGH, standalone: false,
+    detail: 'executable or argument named lolminer', fpProfile: 'A known GPU miner binary name; non-standalone.' },
+
+  { id: 'process.miner.algo.randomx', pattern: 'randomx', category: 'MINER', weight: 22, confidence: MEDIUM, standalone: false,
+    detail: 'RandomX mining algorithm flag', fpProfile: 'The RandomX algorithm name in arguments; could appear unrelated, so low weight and non-standalone.' },
+  { id: 'process.miner.algo.cryptonight', pattern: 'cryptonight', category: 'MINER', weight: 22, confidence: MEDIUM, standalone: false,
+    detail: 'CryptoNight mining algorithm flag', fpProfile: 'The CryptoNight algorithm name in arguments; low weight, non-standalone.' },
 ];
 
 /**

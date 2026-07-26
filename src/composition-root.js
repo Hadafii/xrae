@@ -41,6 +41,7 @@ import { FileContentAnalyzer } from './infrastructure/filesystem/file-analyzer.j
 import { FilesystemCollector } from './infrastructure/collectors/filesystem-collector.js';
 import { CpuBehaviorCollector } from './infrastructure/collectors/cpu-collector.js';
 import { NetworkCollector } from './infrastructure/collectors/connection-collector.js';
+import { ProcessCommandCollector } from './infrastructure/collectors/process-collector.js';
 import { ComponentsV2Builder } from './infrastructure/notification/components-v2-builder.js';
 import { DiscordNotifier, ConsoleNotifier } from './infrastructure/notification/discord-notifier.js';
 
@@ -157,6 +158,7 @@ export function buildApplication({ config, dryRun = false, logger }) {
 
   if (config.scanner.collectConnections) {
     collectors.push(new NetworkCollector({ resolver: containerResolver, logger: log }));
+    collectors.push(new ProcessCommandCollector({ resolver: containerResolver, logger: log }));
   }
 
   // ---- 7. Domain services (pure, no I/O) ---------------------------------

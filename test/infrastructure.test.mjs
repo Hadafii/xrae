@@ -17,6 +17,8 @@ import { FileContentAnalyzer, classifyFile, shannonEntropy } from '../src/infras
 import { RetryPolicy, CircuitBreaker, ResilientHttpClient, HttpError } from '../src/infrastructure/http/resilient-http-client.js';
 import { ComponentsV2Builder, IS_COMPONENTS_V2, sanitiseForDiscord } from '../src/infrastructure/notification/components-v2-builder.js';
 import { DiscordNotifier } from '../src/infrastructure/notification/discord-notifier.js';
+import { ProcessCommandCollector } from '../src/infrastructure/collectors/process-collector.js';
+import { ScoreCalculator } from '../src/domain/scoring.js';
 import { JsonStateRepository } from '../src/infrastructure/persistence/json-state-repository.js';
 import { MemoryLogger, redactSecrets } from '../src/infrastructure/system/logger.js';
 import { FakeClock } from '../src/infrastructure/system/clock.js';
@@ -307,6 +309,30 @@ describe('discord components v2', () => {
     assert.ok(serialised.includes('unambiguous mining indicator'));
   });
 
+  test('states what is wrong and what to do about it', () => {
+    const minerReport = {
+      ...report,
+      verdict: { ...report.verdict, reasons: [{ ruleId: 'process.miner.donate_level', family: 'behavior', category: 'MINER', detail: 'xmrig donate flag' }] },
+      decision: { level: ResponseLevel.SUSPEND, reason: 'live miner confirmed' },
+    };
+    const serialised = JSON.stringify(builder.buildAlert(minerReport));
+    assert.ok(serialised.includes('What is wrong'), 'the alert must summarise the threat');
+    assert.ok(serialised.includes('cryptocurrency miner'), 'a MINER category must read as a miner');
+    assert.ok(serialised.includes('Recommended action'), 'the alert must tell the operator what to do');
+    assert.ok(serialised.includes('has been suspended'), 'a suspend decision must say so');
+  });
+
+  test('the legacy embed also carries the assessment', () => {
+    const minerReport = {
+      ...report,
+      verdict: { ...report.verdict, reasons: [{ ruleId: 'c2.meterpreter', family: 'signature', category: 'C2', detail: 'beacon' }] },
+      decision: { level: ResponseLevel.ALERT, reason: 'review needed' },
+    };
+    const serialised = JSON.stringify(builder.buildLegacyAlert(minerReport));
+    assert.ok(serialised.includes('backdoor tooling'), 'a C2 category must read as backdoor tooling');
+    assert.ok(serialised.includes('Recommended action'));
+  });
+
   test('falls back to an embed when Discord rejects components', async () => {
     const sent = [];
     let firstCall = true;
@@ -344,6 +370,80 @@ describe('discord components v2', () => {
     });
     await notifier.sendAlert(report);
     assert.ok(capturedUrl.includes('with_components=true'), 'without this, Discord ignores the components');
+  });
+});
+
+describe('process command collector', () => {
+  // Reproduces the real incident that content scanning missed: a packed xmrig
+  // binary in a hidden directory, pool URL and wallet passed as arguments, TLS
+  // on 443. The only place the truth lived was /proc/<pid>.
+  const XMRIG_WALLET = '47GBdBPhmgqhAUhpr5Qq33NGBxsuoAryiaujfuAaYdxu2EQUEbBKWXeC775FZUZXwScRQUivSRmfEMsici9CN799TpwP6F8';
+  const XMRIG_CMDLINE =
+    `./xmrig -o pool.supportxmr.com:443 -u ${XMRIG_WALLET} -p x --rig-id x -k --tls ` +
+    '--donate-level=0 --cpu-priority=0 -t 3 --randomx-mode=light';
+  const XMRIG_EXE = '/home/container/plugins/.data/xmrig';
+
+  class FakeResolver {
+    constructor(byUuid) { this.byUuid = byUuid; this.refreshed = 0; }
+    async refresh() { this.refreshed += 1; }
+    pidFor(uuid) { return this.byUuid.get(uuid)?.pid ?? null; }
+    async readCmdline(pid) { return this.#find(pid)?.cmdline ?? ''; }
+    async readExeTarget(pid) { return this.#find(pid)?.exe ?? ''; }
+    #find(pid) { return [...this.byUuid.values()].find((entry) => entry.pid === pid); }
+  }
+
+  const minerServer = { id: 1, identifier: '1b3b9959', uuid: 'miner-uuid', name: 'Wistoria', nodeId: 5, cpuLimitPercent: 100 };
+
+  function minerCollector() {
+    const resolver = new FakeResolver(new Map([['miner-uuid', { pid: 775780, cmdline: XMRIG_CMDLINE, exe: XMRIG_EXE }]]));
+    return new ProcessCommandCollector({ resolver, logger });
+  }
+
+  test('catches the live miner that beat the filesystem scan', async () => {
+    const evidence = await minerCollector().collect(minerServer);
+    const ids = evidence.map((e) => e.ruleId);
+
+    assert.ok(ids.includes('process.miner.donate_level'), 'the xmrig donate flag must fire');
+    assert.ok(ids.includes('process.miner.wallet.monero'), 'the wallet in argv must fire');
+    assert.ok(ids.includes('process.miner.pool.supportxmr'), 'the pool host must fire');
+    assert.ok(ids.includes('process.miner.bin.xmrig'), 'the hidden binary name must fire');
+    assert.ok(evidence.every((e) => e.family === 'behavior'), 'process evidence is the behavior family');
+  });
+
+  test('a standalone critical signal makes the verdict reportable even when the family is capped', () => {
+    // behavior is capped (below the threshold of 100 on its own) - but standalone
+    // + CRITICAL is what makes a live miner raise an alert regardless of score.
+    const calc = new ScoreCalculator({ halfLifeHours: 24 });
+    const evidenceP = minerCollector().collect(minerServer);
+
+    return evidenceP.then((evidence) => {
+      const verdict = calc.calculate({ evidence, previous: {}, nowMs: 1_000 });
+      assert.equal(verdict.hasStandalone, true, 'the miner must produce a standalone indicator');
+      assert.equal(verdict.confidence, 'critical', 'a live miner is a critical-confidence finding');
+    });
+  });
+
+  test('leaves an ordinary game server process alone', async () => {
+    const resolver = new FakeResolver(new Map([['clean', { pid: 4242, cmdline: 'java -Xmx4G -jar server.jar nogui', exe: '/usr/bin/java' }]]));
+    const collector = new ProcessCommandCollector({ resolver, logger });
+    const evidence = await collector.collect({ ...minerServer, uuid: 'clean' });
+    assert.deepEqual(evidence, [], 'a normal java process must produce no evidence');
+  });
+
+  test('returns nothing when the server has no running process', async () => {
+    const resolver = new FakeResolver(new Map());
+    const collector = new ProcessCommandCollector({ resolver, logger });
+    assert.deepEqual(await collector.collect(minerServer), []);
+  });
+
+  test('never throws even if the resolver fails, so other collectors keep running', async () => {
+    const brokenResolver = {
+      pidFor: () => 999,
+      async readCmdline() { throw new Error('EACCES'); },
+      async readExeTarget() { return ''; },
+    };
+    const collector = new ProcessCommandCollector({ resolver: brokenResolver, logger });
+    assert.deepEqual(await collector.collect(minerServer), [], 'a read failure yields no evidence, not a crash');
   });
 });
 

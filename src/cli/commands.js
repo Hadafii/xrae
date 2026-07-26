@@ -14,7 +14,7 @@ import { loadConfig, DEFAULT_CONFIG, checkFilePermissions, resolveEnvFilePath, C
 import { buildApplication } from '../composition-root.js';
 import { ConsoleLogger } from '../infrastructure/system/logger.js';
 import { PolicyMode } from '../domain/policy.js';
-import { RULE_PACK, REGEX_RULES, validateRulePack } from '../domain/rules.js';
+import { RULE_PACK, REGEX_RULES, PROCESS_RULES, validateRulePack } from '../domain/rules.js';
 
 const CHECK = '  \x1b[32m✓\x1b[0m';
 const CROSS = '  \x1b[31m✗\x1b[0m';
@@ -280,7 +280,8 @@ export async function commandDoctor({ configPath }) {
   // 2. Rule pack integrity
   try {
     validateRulePack(RULE_PACK);
-    print(`${CHECK} rule pack valid (${RULE_PACK.length} text rules, ${REGEX_RULES.length} pattern rules)`);
+    validateRulePack(PROCESS_RULES);
+    print(`${CHECK} rule pack valid (${RULE_PACK.length} text rules, ${REGEX_RULES.length} pattern rules, ${PROCESS_RULES.length} process rules)`);
   } catch (error) {
     print(`${CROSS} rule pack is invalid:\n${error.message}`);
     failures += 1;

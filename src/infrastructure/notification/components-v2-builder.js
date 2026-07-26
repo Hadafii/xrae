@@ -53,6 +53,35 @@ const HEADLINE = {
   [ResponseLevel.BLOCKED]: '🛑 Action withheld by safety guardrail',
 };
 
+// Plain-language "what is wrong", worst category first. reasons carry a
+// category; this turns it into a sentence an operator can act on without
+// reading every indicator.
+const CATEGORY_PRIORITY = ['C2', 'EXPLOIT', 'MINER', 'TUNNEL', 'SUSPICIOUS'];
+const CATEGORY_THREAT = {
+  C2: 'Command-and-control or backdoor tooling is present on this server.',
+  EXPLOIT: 'A privilege-escalation exploit is present on this server.',
+  MINER: 'This server is running or carrying a cryptocurrency miner.',
+  TUNNEL: 'An unauthorized tunnel or proxy is present on this server.',
+  SUSPICIOUS: 'Suspicious activity was detected on this server.',
+};
+
+// What the operator should do, given what X-Rae already did.
+const ACTION_ADVICE = {
+  [ResponseLevel.SUSPEND]: 'Action taken: the server has been suspended. Verify the evidence and keep it suspended if confirmed.',
+  [ResponseLevel.THROTTLE]: 'Action taken: CPU has been throttled. Review now and suspend if confirmed.',
+  [ResponseLevel.ALERT]: 'No automated action was taken. Review now and suspend manually if confirmed.',
+  [ResponseLevel.OBSERVE]: 'Running in observe mode, so nothing was touched. Review and suspend manually if confirmed.',
+  [ResponseLevel.BLOCKED]: 'Action was withheld by a safety guardrail. Investigate the node before acting.',
+};
+
+function threatAssessment(verdict, decision) {
+  const categories = new Set((verdict.reasons ?? []).map((reason) => reason.category).filter(Boolean));
+  const primary = CATEGORY_PRIORITY.find((category) => categories.has(category)) ?? 'SUSPICIOUS';
+  const threat = CATEGORY_THREAT[primary] ?? CATEGORY_THREAT.SUSPICIOUS;
+  const action = ACTION_ADVICE[decision.level] ?? ACTION_ADVICE[ResponseLevel.ALERT];
+  return `**What is wrong**\n${threat}\n\n**Recommended action**\n${action}`;
+}
+
 const FAMILY_HEADING = {
   signature: 'Known-bad content',
   structure: 'File structure',
@@ -116,6 +145,8 @@ export class ComponentsV2Builder {
         ].join('\n'),
       ),
     ];
+
+    children.push(separator(), textDisplay(threatAssessment(verdict, decision)));
 
     const evidence = this.#renderEvidence(verdict.reasons);
     if (evidence) {
@@ -191,7 +222,8 @@ export class ComponentsV2Builder {
           description:
             `**${sanitiseForDiscord(server.name)}** (\`${sanitiseForDiscord(server.identifier, 32)}\`)\n` +
             `Confidence **${verdict.confidence.toUpperCase()}** · score **${Math.round(verdict.totalScore)}/${riskThreshold}**\n\n` +
-            truncate(sanitiseForDiscord(decision.reason, 500), 500),
+            `${threatAssessment(verdict, decision)}\n\n` +
+            `**Why this outcome**\n${truncate(sanitiseForDiscord(decision.reason, 400), 400)}`,
           color: ACCENT_COLOR[verdict.confidence] ?? ACCENT_COLOR.info,
           fields: [...grouped].slice(0, 5).map(([family, items]) => ({
             name: FAMILY_HEADING[family] ?? family,

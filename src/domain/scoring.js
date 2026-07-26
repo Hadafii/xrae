@@ -37,7 +37,12 @@ export const FAMILY_CAPS = Object.freeze({
   signature: 80,
   structure: 50,
   entropy: 20,
-  behavior: 30,
+  // behavior carries live-process evidence (a running miner's argv, wallet and
+  // pool), not just the noisy CPU heuristic it started with. At the old cap of
+  // 30, a corroborated CRITICAL miner still could not cross the threshold, so
+  // it lifted to the default. It stays well below signature: one family must
+  // never suspend alone (single-family evidence is still discounted to 0.45x).
+  behavior: 40,
   network: 30,
 });
 
