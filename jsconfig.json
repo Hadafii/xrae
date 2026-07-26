@@ -1,0 +1,13 @@
+{
+  "// why": "Gives editors full autocomplete and type checking from the JSDoc comments, with no build step and no TypeScript dependency. Open the project in VS Code and hovering any port or class shows its contract.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "checkJs": true,
+    "strict": false,
+    "noEmit": true,
+    "allowJs": true
+  },
+  "include": ["src/**/*.js", "test/**/*.mjs", "bin/*"]
+}

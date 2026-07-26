@@ -1,0 +1,15 @@
+{
+  "name": "x-rae",
+  "version": "1.0.0",
+  "description": "Abuse detection agent for Pterodactyl nodes. Zero runtime dependencies.",
+  "type": "module",
+  "bin": { "xrae": "bin/xrae" },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "doctor": "node bin/xrae doctor",
+    "dry": "node bin/xrae scan --dry-run --verbose"
+  },
+  "engines": { "node": ">=20.0.0" },
+  "dependencies": {},
+  "license": "MIT"
+}

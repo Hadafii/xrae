@@ -1,0 +1,77 @@
+// X-Rae configuration.
+// Comments are allowed here. Anything you leave out uses its default -
+// run "xrae doctor" to see the values actually in effect.
+{
+  "panel": {
+    "url": "https://panel.example.com",
+
+    // Prefer the environment variables XRAE_PANEL_APP_KEY and
+    // XRAE_PANEL_CLIENT_KEY over putting keys in this file.
+    "applicationKey": "",
+
+    // Optional. Only needed for CPU behaviour evidence.
+    "clientKey": ""
+  },
+
+  "notify": {
+    // Or set XRAE_DISCORD_WEBHOOK.
+    "discordWebhook": ""
+  },
+
+  "scanner": {
+    "volumesPath": "/var/lib/pterodactyl/volumes",
+    "nodeId": 0,
+    "intervalMinutes": 15,
+
+    // Needs a clientKey.
+    "collectCpu": true,
+
+    // Needs permission to read /proc/<pid>/net (CAP_SYS_PTRACE).
+    // Set to false if you would rather not grant that capability.
+    "collectConnections": true
+  },
+
+  "policy": {
+    // observe   record only, touch nothing        <-- START HERE
+    // alert     tell humans, touch nothing
+    // throttle  may reduce CPU, never suspend
+    // enforce   may suspend, with all guardrails
+    "mode": "observe",
+
+    "riskThreshold": 100,
+    "minConfidenceToSuspend": "critical",
+
+    // Must trip this many cycles in a row before any action is taken.
+    "consecutiveDetections": 2,
+
+    // Hard ceiling on actions per cycle. A bad rule cannot cascade past this.
+    "maxActionsPerCycle": 3,
+
+    // If more than this fraction of the node trips in one cycle, X-Rae assumes
+    // it is broken rather than that everyone started mining, halts all action,
+    // and calls the operator.
+    "anomalyAbortRatio": 0.25,
+
+    // Evidence fades. Without this, weak noise accumulates its way to a
+    // suspension eventually - which is a timer, not a detector.
+    "scoreHalfLifeHours": 24,
+
+    // Where throttle mode caps CPU, as a percentage of the server's own limit.
+    "throttleToCpuPercent": 25
+  },
+
+  "exclusions": {
+    // Turn off a rule:              ["tunnel.nezha.agent"]
+    "ruleIds": [],
+    // Never open a file by name:    ["blocklist.txt"]
+    "fileNames": [],
+    // Skip an extension:            ["bak", "dump"]
+    "extensions": [],
+    // Skip a path inside every volume: ["plugins/HugePlugin"]
+    "relativePaths": []
+  },
+
+  "state": {
+    "path": "/var/lib/x-rae/state.json"
+  }
+}

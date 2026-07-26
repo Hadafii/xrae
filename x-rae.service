@@ -1,0 +1,78 @@
+[Unit]
+Description=X-Rae abuse detection agent
+Documentation=file:/opt/x-rae/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xrae
+Group=xrae
+WorkingDirectory=/opt/x-rae
+ExecStart=/usr/bin/node /opt/x-rae/bin/xrae run --config /etc/x-rae/config.json
+
+# Credentials live here, not in config.json.
+EnvironmentFile=-/etc/x-rae/xrae.env
+
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=90s
+
+# ---------------------------------------------------------------------------
+# Hardening
+# ---------------------------------------------------------------------------
+# X-Rae needs to READ files it does not own, and nothing else. It never writes
+# outside its state directory and never executes anything.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=default
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @module
+
+# The only writable path.
+StateDirectory=x-rae
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/x-rae
+
+# Read-only view of what we scan.
+ReadOnlyPaths=/var/lib/pterodactyl/volumes
+
+# ---------------------------------------------------------------------------
+# Capabilities - deliberately just two, instead of root
+# ---------------------------------------------------------------------------
+#   CAP_DAC_READ_SEARCH  read volume files owned by the pterodactyl user
+#   CAP_SYS_PTRACE       read /proc/<pid>/net to attribute connections to the
+#                        correct container
+#
+# If you would rather not grant CAP_SYS_PTRACE, remove it from both lines below
+# and set "collectConnections": false in the config. Everything else keeps
+# working; you simply lose one evidence family.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+AmbientCapabilities=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+
+# ---------------------------------------------------------------------------
+# Resource ceilings, so a pathological volume cannot take the node down
+# ---------------------------------------------------------------------------
+CPUQuota=50%
+MemoryMax=512M
+IOWeight=50
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
