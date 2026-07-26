@@ -231,6 +231,10 @@ not make them without the user explicitly asking, and push back when asked.
   where an engineer is given a tenant volume and the task "get another tenant
   suspended". If they succeed, the design is not ready.
 - `WingsEnforcer` for CPU throttling is the highest-value next feature.
+- W^X (`MemoryDenyWriteExecute`) is off in the systemd unit: V8's JIT and
+  undici's WASM HTTP parser both need W+X pages. To earn it back, swap the
+  http client's `fetch` transport for `node:https` first, then re-add the
+  directive - never re-add it alone, the service core-dumps on boot.
 - Longer term: split-plane architecture, moving the panel admin key off the node
   entirely (a compromised node currently yields full panel control). The port
   boundaries are already shaped for this.

@@ -9,13 +9,7 @@ Type=simple
 User=xrae
 Group=xrae
 WorkingDirectory=/opt/x-rae
-# --jitless is load-bearing: MemoryDenyWriteExecute below forbids the
-# writable->executable page flips V8's JIT needs, and Node dies with a fatal
-# SetPermissions check without it. Jitless V8 never allocates executable
-# memory, so the W^X mitigation stays - valuable for a process that parses
-# attacker-controlled files. If cycles ever get too slow on a huge node,
-# remove --jitless AND MemoryDenyWriteExecute together, never just one.
-ExecStart=/usr/bin/node --jitless /opt/x-rae/bin/xrae run --config /etc/x-rae/config.json
+ExecStart=/usr/bin/node /opt/x-rae/bin/xrae run --config /etc/x-rae/config.json
 
 # Credentials live here, not in config.json.
 EnvironmentFile=-/etc/x-rae/xrae.env
@@ -45,7 +39,13 @@ RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# MemoryDenyWriteExecute is deliberately ABSENT. Node cannot run under it:
+# V8's JIT dies on a fatal SetPermissions check, and --jitless is no escape
+# because fetch (undici) then fails on its WebAssembly HTTP parser. Both were
+# hit in production before this comment existed. The seccomp filter,
+# NoNewPrivileges, ProtectSystem=strict and the two-capability set above are
+# the compensating controls. Re-adding W^X would mean dropping fetch for
+# node:https first - see the open-work list in CLAUDE.md.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
