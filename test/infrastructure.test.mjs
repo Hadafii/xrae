@@ -258,6 +258,17 @@ describe('resilient http client', () => {
     );
   });
 
+  test('a 4xx never opens the circuit, so best-effort metrics cannot kill the panel path', async () => {
+    // The real incident: per-server CPU metrics 404/403 on servers the client
+    // key does not own tripped the shared "panel" breaker, taking down the
+    // server-list and suspend calls and stalling every cycle.
+    const { client, callCount } = build({ responses: [status(403)], maxAttempts: 1 });
+    for (let i = 0; i < 3; i += 1) {
+      await assert.rejects(() => client.send('https://example.test/m', { label: 'metrics' }), /HTTP 403/);
+    }
+    assert.equal(callCount(), 3, 'every 403 reached the panel; the breaker stayed closed (threshold was 2)');
+  });
+
   test('backoff uses full jitter so nodes do not retry in lockstep', () => {
     const policy = new RetryPolicy({ maxAttempts: 5, baseDelayMs: 100, maxDelayMs: 10000, maxRetryAfterMs: 1000, random: () => 0.5 });
     assert.equal(policy.delayFor(0), 50);

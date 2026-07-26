@@ -213,7 +213,13 @@ export class ResilientHttpClient {
         });
 
         if (!retryable) {
-          this.circuitBreaker.recordFailure();
+          // A 4xx means the service is UP and answered - it is a per-request
+          // verdict (forbidden, not found), not an outage. Best-effort calls
+          // like per-server CPU metrics routinely 403/404 on servers the client
+          // key does not own; letting those open the shared panel breaker would
+          // take down the critical server-list and suspend calls with them.
+          // Only a genuine server-side failure (5xx) trips the breaker here.
+          if (response.status >= 500) this.circuitBreaker.recordFailure();
           throw lastError;
         }
         if (isLastAttempt) break;
