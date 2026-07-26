@@ -84,9 +84,15 @@ const textDisplay = (content) => ({ type: COMPONENT.TEXT_DISPLAY, content });
 const separator = (large = false) => ({ type: COMPONENT.SEPARATOR, divider: true, spacing: large ? 2 : 1 });
 
 export class ComponentsV2Builder {
-  /** @param {object} options @param {string} [options.panelBaseUrl] */
-  constructor({ panelBaseUrl = '' } = {}) {
+  /** @param {object} options @param {string} [options.panelBaseUrl] @param {number} [options.nodeId] */
+  constructor({ panelBaseUrl = '', nodeId = 0 } = {}) {
     this.panelBaseUrl = panelBaseUrl.replace(/\/+$/, '');
+    this.nodeId = nodeId;
+  }
+
+  /** Which agent sent this - one glance in a channel fed by a whole fleet. */
+  #username() {
+    return this.nodeId ? `X-Rae · node ${this.nodeId}` : 'X-Rae';
   }
 
   /**
@@ -137,7 +143,7 @@ export class ComponentsV2Builder {
     children.push(textDisplay(`-# X-Rae · <t:${Math.floor(Date.now() / 1000)}:R>`));
 
     return {
-      username: 'X-Rae',
+      username: this.#username(),
       flags: IS_COMPONENTS_V2,
       allowed_mentions: { parse: [] },
       components: [
@@ -153,7 +159,7 @@ export class ComponentsV2Builder {
   /** @param {{title: string, body: string, level: string}} notice */
   buildNotice({ title, body, level = 'info' }) {
     return {
-      username: 'X-Rae',
+      username: this.#username(),
       flags: IS_COMPONENTS_V2,
       allowed_mentions: { parse: [] },
       components: [
@@ -177,7 +183,7 @@ export class ComponentsV2Builder {
     const grouped = groupReasons(verdict.reasons);
 
     return {
-      username: 'X-Rae',
+      username: this.#username(),
       allowed_mentions: { parse: [] },
       embeds: [
         {

@@ -95,7 +95,7 @@ export function buildApplication({ config, dryRun = false, logger }) {
   const notifier = config.notify.discordWebhook
     ? new DiscordNotifier({
         webhookUrl: config.notify.discordWebhook,
-        builder: new ComponentsV2Builder({ panelBaseUrl: config.notify.panelBaseUrl }),
+        builder: new ComponentsV2Builder({ panelBaseUrl: config.notify.panelBaseUrl, nodeId: config.scanner.nodeId }),
         http: notifyHttp,
         logger: log,
       })

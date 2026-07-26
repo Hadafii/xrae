@@ -457,6 +457,21 @@ export async function commandScan({ configPath, dryRun, verbose, once }) {
 
   await app.stateRepository.load();
 
+  // Continuous mode announces itself once. The predecessor died silently on
+  // reboot for weeks before anyone noticed; a startup notice makes presence -
+  // and absence - visible in the same channel the alerts arrive in.
+  if (!once) {
+    const nodeLabel = config.scanner.nodeId === 0 ? 'all nodes this key can see' : `node ${config.scanner.nodeId}`;
+    await app.notifier.sendNotice({
+      level: 'info',
+      title: `X-Rae active on ${nodeLabel}`,
+      body:
+        `Mode \`${config.policy.mode}\`${dryRun ? ' (dry run: no action possible)' : ''} · ` +
+        `scanning every ${config.scanner.intervalMinutes} min · ` +
+        `threshold ${config.policy.riskThreshold}`,
+    });
+  }
+
   // A plain object rather than AbortController: the use case only needs to ask
   // "should I stop?", and a boolean is easier for a newcomer to follow.
   const cancellation = { aborted: false };
