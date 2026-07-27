@@ -306,7 +306,12 @@ export class FileContentAnalyzer {
   #applyWeighting(rawFindings, fileClass, relativePath) {
     const signatureCount = rawFindings.filter((f) => f.family === EvidenceFamily.SIGNATURE).length;
 
-    if (signatureCount >= SIGNATURE_FLOOD_THRESHOLD) {
+    // A reference list, blocklist, wiki dump or log is text or config - never an
+    // ELF. So an EXECUTABLE that matches many malware signatures IS the malware,
+    // not a list describing it, and the flood guard must not defuse it.
+    // (Real incident: an unpacked xmrig binary matched 8 miner rules across one
+    // category and was suppressed to near-zero, hiding an active miner.)
+    if (fileClass !== 'executable' && signatureCount >= SIGNATURE_FLOOD_THRESHOLD) {
       this.logger.debug(
         `${relativePath} matched ${signatureCount} different rules; treating it as a reference list, not a threat`,
       );

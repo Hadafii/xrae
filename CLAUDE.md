@@ -165,8 +165,12 @@ not make them without the user explicitly asking, and push back when asked.
 6. **Changing the default `policy.mode` to anything but `observe`.**
 
 7. **Removing the signature flood guard** because it "suppresses real
-   detections". A file matching 8+ different rules is a blocklist, a log or a
-   security tool. Without the guard, X-Rae flags its own rule pack.
+   detections". A text/config file matching 8+ different rules is a blocklist, a
+   log or a security tool. Without the guard, X-Rae flags its own rule pack.
+   NOTE: the guard is exempt for `executable` files - an ELF matching many
+   malware signatures IS the malware, not a list describing it. Do not extend
+   the exemption to text/config, and do not remove it from executables (a real
+   unpacked xmrig binary was suppressed to near-zero before this exemption).
 
 8. **Reading only the head of a file for speed.** The original SonarX read 16 KiB
    of head and tail; padding a payload into the middle defeated it entirely.

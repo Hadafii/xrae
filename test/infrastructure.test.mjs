@@ -174,6 +174,36 @@ describe('file analyzer', () => {
     assert.ok(found.every((item) => item.standalone === false), 'nothing in a reference list may stand alone');
   });
 
+  test('does NOT defuse an executable that is itself the malware', async () => {
+    // Real incident: an unpacked xmrig binary matched 8 miner rules and the
+    // flood guard suppressed it as a "reference list", hiding an active miner.
+    // A blocklist is text; an ELF full of miner strings is the miner.
+    const binaryPath = path.join(serverDirectory, 'xmrig'); // no extension -> executable
+    await fsp.writeFile(
+      binaryPath,
+      ['stratum+tcp://pool.example.org:3333', 'xmrig', 'minerd', 'cpuminer', 'randomx', 'cryptonight', 'kawpow', 'donate-level', 'nicehash.com'].join('\n'),
+    );
+
+    const found = await makeAnalyzer().analyze({
+      absolutePath: binaryPath,
+      relativePath: 'plugins/.data/xmrig',
+      fileName: 'xmrig',
+      budget: makeBudget(),
+      cache: null,
+    });
+
+    const totalWeight = found.reduce((sum, item) => sum + item.weight, 0);
+    assert.ok(totalWeight > 100, `an executable miner must keep full weight, got ${totalWeight}`);
+    assert.ok(
+      found.some((item) => item.ruleId === 'miner.stratum.tcp' && item.standalone === true),
+      'the standalone stratum indicator must survive in an executable',
+    );
+    assert.ok(
+      found.every((item) => !item.detail.includes('suppressed')),
+      'an executable payload must not be defused as a reference list',
+    );
+  });
+
   test('the cache returns the same answer without re-reading', async () => {
     const store = new Map();
     const cache = { get: (key) => store.get(key) ?? null, set: (key, value) => store.set(key, value) };
