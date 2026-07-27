@@ -472,6 +472,18 @@ export function loadConfig({ filePath, envFilePath, skipValidation = false } = {
     try {
       envFileResult = loadEnvFileInto(resolvedEnvFile);
     } catch (error) {
+      // The usual cause: the file was created or edited as root and the
+      // unprivileged service user can no longer read it (e.g. after editing it
+      // with an editor that reset owner/mode). Tell the operator exactly how to
+      // fix it rather than surfacing a bare EACCES.
+      if (error.code === 'EACCES' || error.code === 'EPERM') {
+        throw new ConfigError(
+          `Cannot read ${resolvedEnvFile}: permission denied.\n` +
+            `    The service user must be able to read it. Fix with:\n` +
+            `      sudo chown root:xrae ${resolvedEnvFile} && sudo chmod 640 ${resolvedEnvFile}\n` +
+            `    (root:xrae 0640 lets the agent read it while only root can write.)`,
+        );
+      }
       throw new ConfigError(`Could not read ${resolvedEnvFile}: ${error.message}`);
     }
   }

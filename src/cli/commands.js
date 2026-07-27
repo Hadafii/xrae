@@ -105,6 +105,14 @@ export async function commandInit({ configPath }) {
     print('  The config starts in "observe" mode. It will not touch any server.');
     print('  Leave it there for a couple of weeks before enabling enforcement.\n');
     return 0;
+  } catch (error) {
+    // Ctrl+C at a prompt surfaces as an AbortError. That is a cancellation, not
+    // a crash, so exit cleanly instead of dumping a stack trace.
+    if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+      print('\n  Setup cancelled. Nothing was written.\n');
+      return 130;
+    }
+    throw error;
   } finally {
     rl.close();
   }
