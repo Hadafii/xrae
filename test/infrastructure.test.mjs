@@ -21,7 +21,7 @@ import { ProcessCommandCollector } from '../src/infrastructure/collectors/proces
 import { ScoreCalculator } from '../src/domain/scoring.js';
 import { JsonStateRepository } from '../src/infrastructure/persistence/json-state-repository.js';
 import { MemoryLogger, redactSecrets } from '../src/infrastructure/system/logger.js';
-import { FakeClock } from '../src/infrastructure/system/clock.js';
+import { FakeClock, SystemClock } from '../src/infrastructure/system/clock.js';
 import { ResponseLevel } from '../src/domain/policy.js';
 import { Confidence } from '../src/domain/confidence.js';
 
@@ -485,6 +485,43 @@ describe('process command collector', () => {
     };
     const collector = new ProcessCommandCollector({ resolver: brokenResolver, logger });
     assert.deepEqual(await collector.collect(minerServer), [], 'a read failure yields no evidence, not a crash');
+  });
+});
+
+describe('system clock', () => {
+  test('a cancellable sleep keeps the process alive for the full duration', () => {
+    // Regression: unref'ing the inter-cycle sleep timer let `xrae run` exit 0
+    // the instant a cycle finished, so the agent silently died after one cycle
+    // instead of looping every intervalMinutes. A child that awaits a 400ms
+    // cancellable sleep must stay alive ~400ms, not exit immediately.
+    const clockUrl = new URL('../src/infrastructure/system/clock.js', import.meta.url).href;
+    const script =
+      `import { SystemClock } from ${JSON.stringify(clockUrl)};` +
+      'const t = Date.now();' +
+      'await new SystemClock().sleep(400, { aborted: false });' +
+      'process.stdout.write(String(Date.now() - t));';
+
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.ok(
+      Number(out) >= 350,
+      `sleep must keep the event loop alive for its full duration; process reported ${JSON.stringify(out)}`,
+    );
+  });
+
+  test('a cancellable sleep resolves early when aborted', async () => {
+    const cancellation = { aborted: false };
+    const started = Date.now();
+    const clock = new SystemClock();
+    const pending = clock.sleep(10_000, cancellation);
+
+    setTimeout(() => { cancellation.aborted = true; }, 50);
+    await pending;
+
+    assert.ok(Date.now() - started < 2000, 'aborting must resolve the sleep promptly');
   });
 });
 

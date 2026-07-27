@@ -19,17 +19,28 @@ export class SystemClock {
   sleep(ms, cancellation) {
     if (ms <= 0) return Promise.resolve();
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms);
-      if (!cancellation) return;
-      // Poll rather than use AbortSignal so the interface stays trivial.
-      const poll = setInterval(() => {
-        if (!cancellation.aborted) return;
+      let timer;
+      let poll;
+      // Clean up BOTH handles on resolve. This matters twice over:
+      //   - The timer must stay ref'd (not unref'd) so that in `run` mode the
+      //     inter-cycle sleep keeps the process alive between scans. Unref'ing
+      //     it made Node's event loop empty and the process exit 0 the instant
+      //     a cycle finished, so systemd saw a clean exit and the agent
+      //     silently stopped after one cycle.
+      //   - But a ref'd poll interval that is never cleared would keep the
+      //     process alive forever after the sleep resolves. So clear both here.
+      const done = () => {
         clearTimeout(timer);
         clearInterval(poll);
         resolve();
+      };
+
+      timer = setTimeout(done, ms);
+      if (!cancellation) return;
+      // Poll rather than use AbortSignal so the interface stays trivial.
+      poll = setInterval(() => {
+        if (cancellation.aborted) done();
       }, 250);
-      timer.unref?.();
-      poll.unref?.();
     });
   }
 }
