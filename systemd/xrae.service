@@ -9,6 +9,14 @@ Type=simple
 User=xrae
 Group=xrae
 WorkingDirectory=/opt/xrae
+
+# Self-heal the credentials file's permissions on every start. Editing
+# xrae.env as root (e.g. with an editor) can reset it to root:root, after which
+# the unprivileged service user can no longer read it and the agent fails with
+# EACCES. The "+" prefix runs this as root, outside the sandbox below, so it can
+# fix ownership in /etc; the guard makes it a no-op when the file is absent.
+ExecStartPre=+/bin/sh -c 'test -f /etc/xrae/xrae.env && chown root:xrae /etc/xrae/xrae.env && chmod 640 /etc/xrae/xrae.env || true'
+
 ExecStart=/usr/bin/node /opt/xrae/bin/xrae run --config /etc/xrae/config.json
 
 # Credentials live here, not in config.json.
