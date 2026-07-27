@@ -69,6 +69,6 @@
   },
 
   "state": {
-    "path": "/var/lib/x-rae/state.json"
+    "path": "/var/lib/xrae/state.json"
   }
 }

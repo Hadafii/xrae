@@ -107,7 +107,7 @@ export const DEFAULT_CONFIG = {
   },
 
   state: {
-    path: '/var/lib/x-rae/state.json',
+    path: '/var/lib/xrae/state.json',
     maxCacheEntries: 50000,
   },
 };

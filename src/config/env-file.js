@@ -2,7 +2,7 @@
 // JOB:   Read an environment file so credentials never have to live in
 //        config.json.
 //
-// Why this exists at all: systemd loads /etc/x-rae/xrae.env for you via
+// Why this exists at all: systemd loads /etc/xrae/xrae.env for you via
 // EnvironmentFile=, but when an operator runs `xrae doctor` by hand from a
 // shell, those variables are not set. Without this file, doctor would report
 // "no credentials" on a perfectly working install, which is the kind of

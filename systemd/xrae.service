@@ -1,6 +1,6 @@
 [Unit]
 Description=X-Rae abuse detection agent
-Documentation=file:/opt/x-rae/README.md
+Documentation=file:/opt/xrae/README.md
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -8,11 +8,11 @@ Wants=network-online.target
 Type=simple
 User=xrae
 Group=xrae
-WorkingDirectory=/opt/x-rae
-ExecStart=/usr/bin/node /opt/x-rae/bin/xrae run --config /etc/x-rae/config.json
+WorkingDirectory=/opt/xrae
+ExecStart=/usr/bin/node /opt/xrae/bin/xrae run --config /etc/xrae/config.json
 
 # Credentials live here, not in config.json.
-EnvironmentFile=-/etc/x-rae/xrae.env
+EnvironmentFile=-/etc/xrae/xrae.env
 
 Restart=on-failure
 RestartSec=15s
@@ -52,9 +52,9 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @swap @reboot @module
 
 # The only writable path.
-StateDirectory=x-rae
+StateDirectory=xrae
 StateDirectoryMode=0750
-ReadWritePaths=/var/lib/x-rae
+ReadWritePaths=/var/lib/xrae
 
 # Read-only view of what we scan.
 ReadOnlyPaths=/var/lib/pterodactyl/volumes

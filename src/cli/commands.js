@@ -249,7 +249,7 @@ ${line('XRAE_DISCORD_WEBHOOK', webhook, '# Discord webhook. Required before enab
 # XRAE_NODE_ID=1
 # XRAE_MODE=observe
 # XRAE_LOG_LEVEL=info
-# XRAE_STATE_PATH=/var/lib/x-rae/state.json
+# XRAE_STATE_PATH=/var/lib/xrae/state.json
 `;
 }
 
@@ -338,7 +338,7 @@ export async function commandDoctor({ configPath }) {
 
   // 5. Privilege check
   if (process.getuid && process.getuid() === 0) {
-    print(`${WARN} running as root. X-Rae does not need it - see systemd/x-rae.service`);
+    print(`${WARN} running as root. X-Rae does not need it - see systemd/xrae.service`);
     warnings += 1;
   } else {
     print(`${CHECK} not running as root`);
@@ -353,7 +353,7 @@ export async function commandDoctor({ configPath }) {
       print(`${WARN} cannot read ${config.scanner.volumesPath} from this shell (${error.code})`);
       print('      expected on a locked-down node: a manual shell has no capabilities, while');
       print('      the systemd unit grants CAP_DAC_READ_SEARCH so the running service can read it.');
-      print('      verify with: systemctl start x-rae && journalctl -u x-rae -f');
+      print('      verify with: systemctl start xrae && journalctl -u xrae -f');
       warnings += 1;
     } else {
       print(`${CROSS} cannot read ${config.scanner.volumesPath}: ${error.code}`);
@@ -453,7 +453,7 @@ export async function commandScan({ configPath, dryRun, verbose, once }) {
 
   logger.info(`X-Rae starting - mode=${config.policy.mode}${dryRun ? ' (dry run: no action possible)' : ''}`);
   if (process.getuid && process.getuid() === 0) {
-    logger.warn('running as root, which is not required. See systemd/x-rae.service.');
+    logger.warn('running as root, which is not required. See systemd/xrae.service.');
   }
 
   await app.stateRepository.load();

@@ -47,7 +47,7 @@ adalah desainnya, bukan test-nya.
 ## 2. Struktur file
 
 ```
-x-rae/
+xrae/
 ├── bin/xrae                        entry point (7 baris, sengaja)
 ├── src/
 │   ├── domain/                     MURNI — bisa dites tanpa apa pun
@@ -76,7 +76,7 @@ x-rae/
 │   └── composition-root.js         ← BACA INI KEDUA
 │
 ├── test/                           70 test, nol dependensi
-└── systemd/x-rae.service
+└── systemd/xrae.service
 ```
 
 ---

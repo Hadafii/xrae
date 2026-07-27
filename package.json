@@ -1,5 +1,5 @@
 {
-  "name": "x-rae",
+  "name": "xrae",
   "version": "1.0.0",
   "description": "Abuse detection agent for Pterodactyl nodes. Zero runtime dependencies.",
   "type": "module",

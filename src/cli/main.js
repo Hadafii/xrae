@@ -5,7 +5,7 @@ import { ConfigError } from '../config/config.js';
 import { commandInit, commandDoctor, commandScan, commandExplain, commandNotifyTest } from './commands.js';
 
 export const VERSION = '1.0.0';
-const DEFAULT_CONFIG_PATH = '/etc/x-rae/config.json';
+const DEFAULT_CONFIG_PATH = '/etc/xrae/config.json';
 
 const HELP = `
   X-Rae ${VERSION}   abuse detection for Pterodactyl nodes
@@ -32,14 +32,14 @@ const HELP = `
     xrae init
     xrae doctor
     xrae scan --dry-run --verbose
-    systemctl start x-rae
+    systemctl start xrae
 
   SECRETS
     Credentials live in "xrae.env", NEXT TO your config.json. X-Rae finds and
     loads it automatically - systemd loads the same file via EnvironmentFile=,
     so a manual run and the running service see identical values.
 
-      /etc/x-rae/config.json  ->  /etc/x-rae/xrae.env
+      /etc/xrae/config.json  ->  /etc/xrae/xrae.env
 
     Keep it somewhere else with:  XRAE_ENV_FILE=/run/secrets/xrae.env
     A real environment variable always wins over the file.

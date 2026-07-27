@@ -12,9 +12,9 @@
 set -euo pipefail
 
 NODE_MAJOR="${NODE_MAJOR:-22}"
-APP_DIR="${APP_DIR:-/opt/x-rae}"
-CONF_DIR="${CONF_DIR:-/etc/x-rae}"
-STATE_DIR="${STATE_DIR:-/var/lib/x-rae}"
+APP_DIR="${APP_DIR:-/opt/xrae}"
+CONF_DIR="${CONF_DIR:-/etc/xrae}"
+STATE_DIR="${STATE_DIR:-/var/lib/xrae}"
 SERVICE_USER="${SERVICE_USER:-xrae}"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -25,7 +25,38 @@ printf '\n  X-Rae installer\n  ───────────────\n\n
 
 [[ $EUID -eq 0 ]] || die "run this with sudo (the service itself runs unprivileged)"
 [[ -f "$SOURCE_DIR/bin/xrae" && -f "$SOURCE_DIR/xrae.env.example" ]] \
-  || die "run this from inside the x-rae directory"
+  || die "run this from inside the xrae directory"
+
+# ---------------------------------------------------------------------------
+# 0. Migrate a legacy "x-rae" install to the unified "xrae" naming
+# ---------------------------------------------------------------------------
+# Older versions used /opt/x-rae, /etc/x-rae, /var/lib/x-rae and x-rae.service.
+# Everything is "xrae" now. This preserves your config, credentials and score
+# history by moving them across, and retires the old unit. Idempotent: once
+# migrated it does nothing.
+if [[ -f /etc/systemd/system/x-rae.service ]]; then
+  step "retiring legacy x-rae.service"
+  systemctl stop x-rae.service 2>/dev/null || true
+  systemctl disable x-rae.service 2>/dev/null || true
+  rm -f /etc/systemd/system/x-rae.service
+  systemctl daemon-reload
+fi
+if [[ -d /etc/x-rae && ! -e /etc/xrae ]]; then
+  step "moving /etc/x-rae -> /etc/xrae"
+  mv /etc/x-rae /etc/xrae
+fi
+if [[ -d /var/lib/x-rae && ! -e /var/lib/xrae ]]; then
+  step "moving /var/lib/x-rae -> /var/lib/xrae"
+  mv /var/lib/x-rae /var/lib/xrae
+fi
+if [[ -d /opt/x-rae ]]; then
+  rm -rf /opt/x-rae
+fi
+# Repoint any old paths pinned inside the config/env so the stricter unit
+# (StateDirectory=xrae, ReadWritePaths=/var/lib/xrae) can still write state.
+for f in /etc/xrae/config.json /etc/xrae/xrae.env; do
+  [[ -f "$f" ]] && sed -i 's#/var/lib/x-rae#/var/lib/xrae#g; s#/etc/x-rae#/etc/xrae#g' "$f"
+done
 
 # ---------------------------------------------------------------------------
 # 1. Node.js
@@ -109,9 +140,9 @@ install -m 0644 "$SOURCE_DIR/xrae.env.example" "$APP_DIR/xrae.env.example"
 # agent silently vanished on the next reboot while operators believed it was
 # still watching. This actually enables the unit.
 step "installing systemd unit"
-install -m 0644 "$SOURCE_DIR/systemd/x-rae.service" /etc/systemd/system/x-rae.service
+install -m 0644 "$SOURCE_DIR/systemd/xrae.service" /etc/systemd/system/xrae.service
 systemctl daemon-reload
-systemctl enable x-rae.service >/dev/null 2>&1
+systemctl enable xrae.service >/dev/null 2>&1
 
 printf '
   ──────────────────────────────────────────────────────────────────
@@ -127,8 +158,8 @@ printf '
 
   When you are happy:
 
-       sudo systemctl start x-rae
-       journalctl -u x-rae -f
+       sudo systemctl start xrae
+       journalctl -u xrae -f
 
   It starts in "observe" mode and will not touch a single server until
   you deliberately change that. Leave it there for a few weeks.

@@ -11,7 +11,7 @@ men-suspend pelanggan yang tidak bersalah.
 ## Instalasi
 
 ```bash
-git clone <repo> x-rae && cd x-rae
+git clone <repo> xrae && cd xrae
 sudo ./install.sh
 ```
 
@@ -40,8 +40,8 @@ sudo -u xrae xrae scan --dry-run --verbose
 Kalau sudah puas:
 
 ```bash
-sudo systemctl start x-rae
-journalctl -u x-rae -f
+sudo systemctl start xrae
+journalctl -u xrae -f
 ```
 
 Default-nya **mode observe**. X-Rae tidak akan menyentuh satu server pun sampai
@@ -50,6 +50,9 @@ kamu sengaja mengubahnya. Biarkan begitu beberapa minggu.
 ---
 
 ## Perintah
+
+Referensi lengkap (guna, contoh, semua flag) ada di
+**[docs/COMMANDS.md](docs/COMMANDS.md)**. Ringkasnya:
 
 ```
 xrae init                 buat config, interaktif
@@ -60,6 +63,9 @@ xrae run                  jalan terus (ini yang dipakai systemd)
 xrae explain <id>         tampilkan bukti tersimpan untuk satu server
 xrae notify-test          kirim satu notice percobaan ke webhook Discord
 ```
+
+Command CLI dan service systemd sama-sama `xrae`:
+`systemctl start xrae`, `journalctl -u xrae -f`.
 
 `xrae notify-test` ada supaya webhook terbukti jalan **sebelum** dipercaya
 membawa alert sungguhan — webhook yang dihapus di sisi Discord gagal diam-diam
@@ -130,8 +136,8 @@ hipotesis yang jauh lebih mungkin adalah detektornya yang rusak.
 
 | File | Isi | Mode | Boleh dibagikan? |
 |---|---|---|---|
-| `/etc/x-rae/config.json` | pengaturan | 0644 | **ya** — tempel ke thread support tanpa cemas |
-| `/etc/x-rae/xrae.env` | kredensial | `0640 root:xrae` | **tidak, pernah** |
+| `/etc/xrae/config.json` | pengaturan | 0644 | **ya** — tempel ke thread support tanpa cemas |
+| `/etc/xrae/xrae.env` | kredensial | `0640 root:xrae` | **tidak, pernah** |
 
 X-Rae menemukan `xrae.env` **otomatis** karena letaknya di sebelah
 `config.json`. systemd juga memuatnya lewat `EnvironmentFile=`, jadi
@@ -171,11 +177,11 @@ menang:
 
 ```
   Credential sources:
-  ✓ panel application key  /etc/x-rae/xrae.env
+  ✓ panel application key  /etc/xrae/xrae.env
   ! panel client key       not set
   ✓ Discord webhook        environment
 
-  ✗ panel application key is set in BOTH config.json and /etc/x-rae/xrae.env.
+  ✗ panel application key is set in BOTH config.json and /etc/xrae/xrae.env.
     The env file wins. Remove one of them.
 ```
 

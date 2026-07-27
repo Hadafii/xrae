@@ -634,8 +634,8 @@ BLANK=
   test('the env file is looked for next to config.json', async () => {
     const { resolveEnvFilePath } = await import('../src/config/config.js');
     assert.equal(
-      resolveEnvFilePath({ configFilePath: '/etc/x-rae/config.json' }),
-      path.resolve('/etc/x-rae/xrae.env'),
+      resolveEnvFilePath({ configFilePath: '/etc/xrae/config.json' }),
+      path.resolve('/etc/xrae/xrae.env'),
       'convention over configuration: predictable beats flexible when a node is on fire',
     );
     assert.equal(resolveEnvFilePath({ explicitEnvFilePath: '/run/secrets/x.env' }), path.resolve('/run/secrets/x.env'));
