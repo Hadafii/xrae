@@ -18,8 +18,43 @@ STATE_DIR="${STATE_DIR:-/var/lib/xrae}"
 SERVICE_USER="${SERVICE_USER:-xrae}"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+PANEL_URL=""
+NODE_TOKEN=""
+
 die()  { printf '\n  error: %s\n\n' "$*" >&2; exit 1; }
 step() { printf '  ==> %s\n' "$*"; }
+
+usage() {
+  cat <<'USAGE'
+  Usage: install.sh [--panel URL --token TOKEN]
+
+    --panel URL     X-Rae control panel, e.g. https://xrae.raehost.com
+    --token TOKEN   node token issued by that panel (shown once)
+    -h, --help      this text
+
+  With both flags the install is non-interactive: reporting is configured and
+  the service is started for you. This is the form the panel prints when you
+  add a node. Without them the install stops after copying files, exactly as
+  before, and you finish by hand.
+USAGE
+}
+
+# Flags are parsed before the root check, so --help never needs sudo.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --panel) PANEL_URL="${2:-}"; shift 2 ;;
+    --token) NODE_TOKEN="${2:-}"; shift 2 ;;
+    --panel=*) PANEL_URL="${1#*=}"; shift ;;
+    --token=*) NODE_TOKEN="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; die "unknown option: $1" ;;
+  esac
+done
+
+# Half-configured reporting is worse than none: the node would look installed
+# and simply never appear in the panel. Refuse instead of half-doing it.
+[[ -n "$PANEL_URL" && -z "$NODE_TOKEN" ]] && die "--panel was given without --token"
+[[ -n "$NODE_TOKEN" && -z "$PANEL_URL" ]] && die "--token was given without --panel"
 
 printf '\n  X-Rae installer\n  ───────────────\n\n'
 
@@ -143,6 +178,58 @@ step "installing systemd unit"
 install -m 0644 "$SOURCE_DIR/systemd/xrae.service" /etc/systemd/system/xrae.service
 systemctl daemon-reload
 systemctl enable xrae.service >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# 7. Panel reporting (only when --panel and --token were given)
+# ---------------------------------------------------------------------------
+if [[ -n "$PANEL_URL" ]]; then
+  step "configuring reporting to $PANEL_URL"
+
+  ENV_FILE="$CONF_DIR/xrae.env"
+  touch "$ENV_FILE"
+
+  # Replace in place if present, append if not, so re-running with a rotated
+  # token updates rather than stacking duplicate lines (systemd takes the last
+  # one, which makes duplicates a confusing way to be wrong).
+  for pair in "XRAE_REPORTING_URL=$PANEL_URL" "XRAE_REPORTING_TOKEN=$NODE_TOKEN"; do
+    key="${pair%%=*}"
+    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      sed -i "s|^${key}=.*|${pair}|" "$ENV_FILE"
+    else
+      printf '%s\n' "$pair" >> "$ENV_FILE"
+    fi
+  done
+
+  chown root:"$SERVICE_USER" "$ENV_FILE"
+  chmod 640 "$ENV_FILE"
+
+  if [[ -f "$CONF_DIR/config.json" ]]; then
+    step "starting xrae"
+    systemctl restart xrae.service
+    printf '
+  ──────────────────────────────────────────────────────────────────
+  Reporting to %s is configured and the service is running.
+
+  This node appears in the panel on its first heartbeat, usually within
+  seconds. Watch it come up with:
+
+       journalctl -u xrae -f
+  ──────────────────────────────────────────────────────────────────
+
+' "$PANEL_URL"
+    exit 0
+  fi
+
+  printf '
+  Reporting is configured, but there is no %s/config.json yet, so the
+  service was not started. Finish with:
+
+       sudo xrae init --config %s/config.json
+       sudo systemctl start xrae
+
+' "$CONF_DIR" "$CONF_DIR"
+  exit 0
+fi
 
 printf '
   ──────────────────────────────────────────────────────────────────

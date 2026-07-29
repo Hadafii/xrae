@@ -2,9 +2,10 @@
 // JOB:   Parse arguments and hand off to a command. Nothing else.
 
 import { ConfigError } from '../config/config.js';
+import { VERSION } from '../version.js';
 import { commandInit, commandDoctor, commandScan, commandExplain, commandNotifyTest } from './commands.js';
 
-export const VERSION = '1.0.0';
+export { VERSION };
 const DEFAULT_CONFIG_PATH = '/etc/xrae/config.json';
 
 const HELP = `

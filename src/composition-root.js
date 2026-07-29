@@ -44,6 +44,24 @@ import { NetworkCollector } from './infrastructure/collectors/connection-collect
 import { ProcessCommandCollector } from './infrastructure/collectors/process-collector.js';
 import { ComponentsV2Builder } from './infrastructure/notification/components-v2-builder.js';
 import { DiscordNotifier, ConsoleNotifier } from './infrastructure/notification/discord-notifier.js';
+import { CompositeNotifier } from './infrastructure/notification/composite-notifier.js';
+import { PanelReporter } from './infrastructure/reporting/panel-reporter.js';
+import { NullCycleReporter } from './infrastructure/reporting/null-reporter.js';
+import { AppliedConfigStore } from './infrastructure/reporting/applied-config-store.js';
+import { VERSION as AGENT_VERSION } from './version.js';
+
+/**
+ * Panel-managed files sit beside state.json. That directory is the only path
+ * the hardened systemd unit can write to: /etc is mounted read-only, so the
+ * agent could not persist a pulled config there even as root.
+ */
+function appliedConfigPath(statePath) {
+  return statePath.replace(/[^/\\]+$/, 'applied-config.json');
+}
+
+export function panelConfigPath(statePath) {
+  return statePath.replace(/[^/\\]+$/, 'panel-config.json');
+}
 
 /**
  * @param {object} options
@@ -101,6 +119,36 @@ export function buildApplication({ config, dryRun = false, logger }) {
         logger: log,
       })
     : new ConsoleNotifier({ logger: log });
+
+  // ---- 5b. Reporting to the X-Rae panel ----------------------------------
+  // Its OWN http client, so a dead panel opens its own breaker and cannot take
+  // the Pterodactyl calls (server list, suspend) down with it.
+  const reportingConfigured = Boolean(config.reporting?.url && config.reporting?.token);
+
+  const reporter = reportingConfigured
+    ? new PanelReporter({
+        baseUrl: config.reporting.url,
+        token: config.reporting.token,
+        agentVersion: AGENT_VERSION,
+        appliedConfig: new AppliedConfigStore({
+          filePath: appliedConfigPath(config.state.path),
+          logger: log,
+        }).load(),
+        http: new ResilientHttpClient({
+          retryPolicy: new RetryPolicy(config.reporting.retry),
+          circuitBreaker: new CircuitBreaker({
+            name: 'xrae-panel',
+            ...config.reporting.circuitBreaker,
+            clock,
+            logger: log,
+          }),
+          logger: log,
+          clock,
+          timeoutMs: config.reporting.timeoutMs,
+        }),
+        logger: log,
+      })
+    : new NullCycleReporter({ logger: log });
 
   // ---- 6. Evidence collectors -------------------------------------------
   // TO ADD A NEW DETECTION SOURCE: build it above, push it below. Done.
@@ -185,6 +233,7 @@ export function buildApplication({ config, dryRun = false, logger }) {
     policy,
     stateRepository,
     notifier,
+    reporter,
     enforcer,
     clock,
     logger: log,
@@ -204,6 +253,8 @@ export function buildApplication({ config, dryRun = false, logger }) {
     stateRepository,
     serverRepository,
     notifier,
+    reporter,
+    panelConfigPath: panelConfigPath(config.state.path),
     containerResolver,
     isReadOnlyMode: dryRun || config.policy.mode === PolicyMode.OBSERVE || config.policy.mode === PolicyMode.ALERT,
   };

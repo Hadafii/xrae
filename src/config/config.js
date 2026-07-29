@@ -60,6 +60,17 @@ export const DEFAULT_CONFIG = {
     circuitBreaker: { failureThreshold: 10, cooldownMs: 120000 },
   },
 
+  // The X-Rae control panel. Deliberately NOT nested under `panel`, which
+  // already means Pterodactyl everywhere else in this file. Two different
+  // things called "panel" in one config is how outages get made.
+  reporting: {
+    url: '',
+    token: '',
+    timeoutMs: 10000,
+    retry: { maxAttempts: 3, baseDelayMs: 1000, maxDelayMs: 15000, maxRetryAfterMs: 60000 },
+    circuitBreaker: { failureThreshold: 6, cooldownMs: 120000 },
+  },
+
   scanner: {
     volumesPath: '/var/lib/pterodactyl/volumes',
     nodeId: 0,
@@ -120,6 +131,7 @@ export const TRACKED_SECRETS = [
   { label: 'panel application key', variable: 'XRAE_PANEL_APP_KEY', keyPath: ['panel', 'applicationKey'] },
   { label: 'panel client key', variable: 'XRAE_PANEL_CLIENT_KEY', keyPath: ['panel', 'clientKey'] },
   { label: 'Discord webhook', variable: 'XRAE_DISCORD_WEBHOOK', keyPath: ['notify', 'discordWebhook'] },
+  { label: 'X-Rae panel node token', variable: 'XRAE_REPORTING_TOKEN', keyPath: ['reporting', 'token'] },
 ];
 
 /** Secrets belong in the environment, not in a file on disk. */
@@ -128,6 +140,8 @@ const ENVIRONMENT_OVERRIDES = [
   ['XRAE_PANEL_APP_KEY', ['panel', 'applicationKey']],
   ['XRAE_PANEL_CLIENT_KEY', ['panel', 'clientKey']],
   ['XRAE_DISCORD_WEBHOOK', ['notify', 'discordWebhook']],
+  ['XRAE_REPORTING_URL', ['reporting', 'url']],
+  ['XRAE_REPORTING_TOKEN', ['reporting', 'token']],
   ['XRAE_VOLUMES_PATH', ['scanner', 'volumesPath']],
   ['XRAE_NODE_ID', ['scanner', 'nodeId']],
   ['XRAE_MODE', ['policy', 'mode']],
@@ -276,6 +290,37 @@ function validate(config) {
     'panel.applicationKey is required (or set the XRAE_PANEL_APP_KEY environment variable)',
   );
 
+  // Reporting is optional, but half-configured reporting is not: silently never
+  // reporting is exactly the failure the panel exists to make visible.
+  const hasReportingUrl = Boolean(config.reporting?.url);
+  const hasReportingToken = Boolean(config.reporting?.token);
+
+  require(
+    hasReportingUrl === hasReportingToken,
+    hasReportingUrl
+      ? 'reporting.url is set but the node token is missing (set XRAE_REPORTING_TOKEN)'
+      : 'a node token is set but reporting.url is missing (set XRAE_REPORTING_URL)',
+  );
+
+  if (hasReportingUrl) {
+    let reportingUrl = null;
+
+    try {
+      reportingUrl = new URL(config.reporting.url);
+    } catch {
+      problems.push(`reporting.url is not a valid URL: ${config.reporting.url}`);
+    }
+
+    if (reportingUrl) {
+      const isLoopback = ['localhost', '127.0.0.1', '::1'].includes(reportingUrl.hostname);
+
+      require(
+        reportingUrl.protocol === 'https:' || isLoopback || config.panel.allowInsecureTransport,
+        'reporting.url must use https: the node token is a bearer credential and would travel in clear text',
+      );
+    }
+  }
+
   if (config.panel.url) {
     let parsed = null;
     try { parsed = new URL(config.panel.url); } catch { problems.push(`panel.url is not a valid URL: ${config.panel.url}`); }
@@ -344,8 +389,35 @@ function validate(config) {
   }
 }
 
+/** Where `pullPanelConfig` stages what the panel published. */
+export function panelConfigPathFor(statePath) {
+  return String(statePath ?? '').replace(/[^/\\]+$/, 'panel-config.json');
+}
+
+/**
+ * Read the staged panel config, if any. A corrupt file is ignored rather than
+ * fatal: the node must keep detecting on its last known-good config, not refuse
+ * to start because the panel once sent something unreadable.
+ */
+function readStagedPanelConfig(statePath) {
+  if (!statePath) return null;
+
+  const filePath = panelConfigPathFor(statePath);
+
+  if (!fs.existsSync(filePath)) return null;
+
+  try {
+    const parsed = JSON.parse(stripJsonComments(fs.readFileSync(filePath, 'utf8')));
+
+    return isPlainObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalise(config) {
   config.panel.url = config.panel.url.replace(/\/+$/, '');
+  config.reporting.url = String(config.reporting.url ?? '').replace(/\/+$/, '');
   config.notify.panelBaseUrl = (config.notify.panelBaseUrl || config.panel.url).replace(/\/+$/, '');
   config.scanner.volumesPath = path.resolve(config.scanner.volumesPath);
   config.policy.ignoredServers = (config.policy.ignoredServers ?? []).map(String);
@@ -496,7 +568,21 @@ export function loadConfig({ filePath, envFilePath, skipValidation = false } = {
   });
   warnings.push(...conflicts);
 
-  const config = normalise(applyEnvironment(deepMerge(DEFAULT_CONFIG, fromFile)));
+  // Layering, lowest priority first: defaults, the local file, the config the
+  // panel published, then the environment. The panel outranks the local file
+  // because it is the fleet's source of truth for policy; the environment still
+  // outranks everything, so credentials are never overridable from the network.
+  const merged = deepMerge(DEFAULT_CONFIG, fromFile);
+  const staged = readStagedPanelConfig(merged.state?.path);
+
+  if (staged) {
+    warnings.push(`applying panel-published config from ${panelConfigPathFor(merged.state.path)}`);
+  }
+
+  const config = normalise(
+    applyEnvironment(staged ? deepMerge(merged, staged) : merged),
+  );
+
   if (!skipValidation) validate(config);
 
   return {

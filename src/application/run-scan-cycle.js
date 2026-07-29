@@ -37,6 +37,7 @@ export class RunScanCycle {
    * @param {import('../domain/policy.js').EnforcementPolicy} deps.policy
    * @param {import('./ports.js').StateRepository} deps.stateRepository
    * @param {import('./ports.js').Notifier} deps.notifier
+   * @param {import('./ports.js').CycleReporter} deps.reporter
    * @param {import('./ports.js').Enforcer} deps.enforcer
    * @param {import('./ports.js').Clock} deps.clock
    * @param {import('./ports.js').Logger} deps.logger
@@ -52,7 +53,8 @@ export class RunScanCycle {
 
   /**
    * @param {{aborted: boolean}} cancellation  simple flag object, set on SIGTERM
-   * @returns {Promise<{assessed: number, overThreshold: number, actions: number}>}
+   * @returns {Promise<{assessed: number, overThreshold: number, actions: number,
+   *                    commands: import('./ports.js').PanelCommand[]}>}
    */
   async execute(cancellation = { aborted: false }) {
     const startedMs = this.clock.nowMs();
@@ -68,12 +70,32 @@ export class RunScanCycle {
 
     await this.stateRepository.save();
 
-    const seconds = ((this.clock.nowMs() - startedMs) / 1000).toFixed(1);
+    const finishedMs = this.clock.nowMs();
+    const seconds = ((finishedMs - startedMs) / 1000).toFixed(1);
     this.logger.info(
       `cycle done in ${seconds}s: ${summary.assessed} assessed, ` +
         `${summary.overThreshold} over threshold, ${summary.actions} action(s) taken`,
     );
-    return summary;
+
+    // Reporting is last and cannot fail the cycle: state is already saved and
+    // any enforcement already happened. A panel outage costs telemetry, never
+    // protection.
+    const commands = await this.reporter.reportCycle({
+      startedAtMs: startedMs,
+      finishedAtMs: finishedMs,
+      scanned: summary.assessed,
+      flagged: summary.overThreshold,
+      actions: summary.actions,
+      riskThreshold: this.settings.riskThreshold,
+      entries: summary.entries,
+    });
+
+    return {
+      assessed: summary.assessed,
+      overThreshold: summary.overThreshold,
+      actions: summary.actions,
+      commands,
+    };
   }
 
   /** PHASE 1 - gather and score. No side effects on any server. */
@@ -122,6 +144,7 @@ export class RunScanCycle {
     };
 
     let anomalyAnnounced = false;
+    const entries = [];
 
     for (const assessment of assessments) {
       if (cancellation.aborted) break;
@@ -146,9 +169,25 @@ export class RunScanCycle {
 
       const outcome = await this.#applyDecision(assessment, decision, cycleStats);
       this.#persist(assessment, outcome);
+
+      // A clean server is counted, never listed. Anything with evidence, or
+      // anything we acted on, is worth a row in the panel.
+      if (assessment.verdict.reasons.length > 0 || outcome.action) {
+        entries.push({
+          server: assessment.server,
+          verdict: assessment.verdict,
+          decision,
+          action: outcome.action,
+        });
+      }
     }
 
-    return { assessed: assessments.length, overThreshold, actions: cycleStats.actionsTaken };
+    return {
+      assessed: assessments.length,
+      overThreshold,
+      actions: cycleStats.actionsTaken,
+      entries,
+    };
   }
 
   /**
@@ -159,6 +198,10 @@ export class RunScanCycle {
     const { server, verdict } = assessment;
     let effective = decision;
     let failureNote;
+    // Null unless enforcement was genuinely attempted. A dry run or an
+    // unsupported level is NOT an action, and recording it as one would make
+    // the panel's enforcement history a work of fiction.
+    let action = null;
 
     const wantsAction = decision.level === ResponseLevel.SUSPEND || decision.level === ResponseLevel.THROTTLE;
 
@@ -176,11 +219,13 @@ export class RunScanCycle {
           await this.enforcer.throttle(server, this.settings.throttleToCpuPercent);
         }
         cycleStats.actionsTaken += 1;
+        action = { performed: decision.level, success: true };
         this.logger.warn(
           `${decision.level} applied to ${server.identifier} (${server.name}) at score ${Math.round(verdict.totalScore)}`,
         );
       } catch (error) {
         failureNote = `action failed: ${error.message}`;
+        action = { performed: decision.level, success: false, failureNote };
         this.logger.error(`${decision.level} failed for ${server.identifier}: ${error.message}`);
         effective = { level: ResponseLevel.ALERT, reason: failureNote };
       }
@@ -199,7 +244,7 @@ export class RunScanCycle {
       });
     }
 
-    return { level: effective.level, notified };
+    return { level: effective.level, notified, action };
   }
 
   #persist(assessment, outcome) {

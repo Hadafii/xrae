@@ -492,19 +492,182 @@ export async function commandScan({ configPath, dryRun, verbose, once }) {
   process.on('SIGTERM', () => stop('SIGTERM'));
 
   do {
+    let commands = [];
+
     try {
-      await app.runScanCycle.execute(cancellation);
+      const summary = await app.runScanCycle.execute(cancellation);
+
+      commands = summary?.commands ?? [];
     } catch (error) {
       logger.error(`cycle failed: ${error.stack ?? error.message}`);
     }
 
     if (once || cancellation.aborted) break;
+
+    const rescanNow = await applyPanelCommands({ app, commands, logger });
+
+    // A queued rescan means an operator is waiting and watching. Skipping the
+    // sleep is the entire point of that button; making them wait out the
+    // interval anyway would make it a lie.
+    if (rescanNow) {
+      logger.info('rescan requested by the panel; starting the next cycle now');
+      continue;
+    }
+
     await app.clock.sleep(config.scanner.intervalMinutes * 60_000, cancellation);
   } while (!cancellation.aborted);
 
   await app.stateRepository.save().catch((error) => logger.error(`final save failed: ${error.message}`));
   logger.info('stopped cleanly');
   return 0;
+}
+
+/**
+ * Carry out what the panel asked for between cycles.
+ *
+ * Commands are operational only: rescan and config sync. There is deliberately
+ * no "suspend this server" command, because enforcement authority stays on the
+ * node. That is the guardrail that stops a compromised panel from becoming a
+ * fleet-wide weapon.
+ *
+ * @returns {Promise<boolean>} true when the next cycle should start immediately
+ */
+export async function applyPanelCommands({ app, commands, logger }) {
+  const reporter = app.reporter;
+  let rescanNow = false;
+
+  if (reporter?.enabled && reporter.configOutOfDate) {
+    await pullPanelConfig({ app, logger });
+  }
+
+  if (!Array.isArray(commands) || commands.length === 0) return rescanNow;
+
+  const results = [];
+
+  for (const command of commands) {
+    switch (command.type) {
+      case 'rescan_now':
+        rescanNow = true;
+        results.push({ id: command.id, success: true });
+        break;
+
+      case 'sync_config': {
+        const applied = await pullPanelConfig({ app, logger, force: true });
+
+        results.push({ id: command.id, success: applied });
+        break;
+      }
+
+      default:
+        logger.warn(`ignoring unknown panel command "${command.type}"`);
+        results.push({ id: command.id, success: false });
+    }
+  }
+
+  await reporter?.ackCommands(
+    results.map((result) => result.id),
+    results,
+  );
+
+  return rescanNow;
+}
+
+/**
+ * Fetch the panel's config and stage it for the next start.
+ *
+ * It is NOT applied to the running process. Re-wiring collectors, policy and
+ * schedules mid-cycle is exactly the kind of half-applied state that produces
+ * an agent nobody can reason about. Staging plus a supervised restart gives the
+ * same outcome with a state that is always one of two known-good ones.
+ */
+async function pullPanelConfig({ app, logger, force = false }) {
+  const reporter = app.reporter;
+
+  if (!reporter?.enabled) return false;
+  if (!force && !reporter.configOutOfDate) return false;
+
+  const pulled = await reporter.fetchConfig();
+
+  if (!pulled?.config || !pulled.hash) {
+    logger.warn('panel config pull returned nothing usable; keeping the current config');
+    return false;
+  }
+
+  // Validate before trusting it. The panel is authenticated, not infallible,
+  // and a malformed push must never leave the node unable to detect anything.
+  const problems = validatePanelConfig(pulled.config);
+
+  if (problems.length > 0) {
+    logger.error(
+      `panel config v${pulled.version} rejected, keeping the current one: ${problems.join('; ')}`,
+    );
+    return false;
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(app.panelConfigPath), { recursive: true });
+    fs.writeFileSync(app.panelConfigPath, `${JSON.stringify(pulled.config, null, 2)}\n`, {
+      mode: 0o640,
+    });
+    // Deliberately does NOT change what this process reports. Until the restart
+    // actually loads it, this node is still running the old config, and saying
+    // otherwise would make the panel's sync column lie.
+    reporter.appliedConfig?.recordForNextStart({ hash: pulled.hash, version: pulled.version });
+  } catch (error) {
+    logger.error(`could not stage panel config: ${error.message}`);
+    return false;
+  }
+
+  logger.warn(
+    `panel config v${pulled.version} staged. Restart to apply: systemctl restart xrae`,
+  );
+
+  return true;
+}
+
+/**
+ * Structural checks only. The panel owns the values; we own not crashing.
+ *
+ * Absent fields are valid: the staged config is MERGED over the local one, so a
+ * partial push means "change these, keep the rest". Demanding completeness would
+ * reject a perfectly good one-field change.
+ */
+export function validatePanelConfig(config) {
+  const problems = [];
+  const positive = (value, label) => {
+    if (value === undefined) return;
+    if (!Number.isFinite(value) || value <= 0) problems.push(`${label} must be a positive number`);
+  };
+
+  if (!config || typeof config !== 'object') return ['config is not an object'];
+
+  if (config.scanner) {
+    positive(config.scanner.intervalMinutes, 'scanner.intervalMinutes');
+    if (
+      config.scanner.delayBetweenServersMs !== undefined &&
+      (!Number.isFinite(config.scanner.delayBetweenServersMs) ||
+        config.scanner.delayBetweenServersMs < 0)
+    ) {
+      problems.push('scanner.delayBetweenServersMs must be zero or more');
+    }
+  }
+
+  if (config.policy) {
+    positive(config.policy.riskThreshold, 'policy.riskThreshold');
+    if (config.policy.mode && !Object.values(PolicyMode).includes(config.policy.mode)) {
+      problems.push(`policy.mode "${config.policy.mode}" is not a known mode`);
+    }
+  }
+
+  for (const key of ['paths', 'ruleIds', 'servers']) {
+    const value = config.exclusions?.[key];
+
+    if (value !== undefined && !Array.isArray(value)) {
+      problems.push(`exclusions.${key} must be an array`);
+    }
+  }
+
+  return problems;
 }
 
 // ---------------------------------------------------------------------------

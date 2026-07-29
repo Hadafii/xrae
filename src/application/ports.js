@@ -108,6 +108,52 @@
  */
 
 /**
+ * Reports the WHOLE cycle to a central panel, including servers that came back
+ * clean.
+ *
+ * Why this is separate from Notifier: a notifier tells humans about something
+ * worth reading and deliberately stays quiet otherwise. A reporter is
+ * telemetry. "97 scanned, nothing found" is worthless as a message and
+ * essential as a record, because it is the only thing that distinguishes a
+ * healthy quiet node from an agent that died. Overloading sendAlert would have
+ * meant one of those two jobs done badly.
+ *
+ * CONTRACT - all implementations must honour this:
+ *   - Never throw. The panel is optional infrastructure; a reporting failure
+ *     must never abort a scan or stop enforcement.
+ *   - Return the commands the panel wants run, or an empty array.
+ *
+ * @typedef {object} CycleEntry
+ * @property {ServerRef} server
+ * @property {import('../domain/scoring.js').Verdict} verdict
+ * @property {import('../domain/policy.js').Decision} decision
+ * @property {{performed: string, success: boolean, failureNote?: string}|null} action
+ *   What was actually done, which may differ from what was decided.
+ *
+ * @typedef {object} CycleReport
+ * @property {number} startedAtMs
+ * @property {number} finishedAtMs
+ * @property {number} scanned
+ * @property {number} flagged
+ * @property {number} actions
+ * @property {number} riskThreshold   in force for this cycle, so the panel can
+ *   show a score in the context it was judged against
+ * @property {CycleEntry[]} entries
+ *   Only servers that produced evidence or were acted on. Clean servers are
+ *   counted in `scanned` and never listed: a row per clean server per cycle
+ *   would dominate the panel's database and say nothing.
+ *
+ * @typedef {object} PanelCommand
+ * @property {number} id
+ * @property {string} type            "rescan_now" | "sync_config"
+ * @property {any} payload
+ *
+ * @typedef {object} CycleReporter
+ * @property {boolean} enabled
+ * @property {(report: CycleReport) => Promise<PanelCommand[]>} reportCycle
+ */
+
+/**
  * Actually does something to a server.
  *
  * Split into separate methods rather than one `act(level)` so that a partial

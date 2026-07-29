@@ -76,6 +76,18 @@ class RecordingNotifier {
   }
 }
 
+class RecordingReporter {
+  enabled = true;
+  constructor({ commands = [] } = {}) {
+    this.reports = [];
+    this.commands = commands;
+  }
+  async reportCycle(report) {
+    this.reports.push(report);
+    return this.commands;
+  }
+}
+
 class RecordingEnforcer {
   constructor({ failOn = [] } = {}) {
     this.suspended = [];
@@ -116,6 +128,7 @@ function buildCycle({
   const clock = new FakeClock();
   const logger = new MemoryLogger();
   const notifier = new RecordingNotifier();
+  const reporter = new RecordingReporter();
   const stateRepository = new InMemoryStateRepository(clock);
 
   const policy = new EnforcementPolicy({
@@ -142,13 +155,14 @@ function buildCycle({
     policy,
     stateRepository,
     notifier,
+    reporter,
     enforcer,
     clock,
     logger,
     settings: { riskThreshold: 100, delayBetweenServersMs: 0, throttleToCpuPercent: 25, dryRun },
   });
 
-  return { cycle, notifier, enforcer, stateRepository, logger, clock };
+  return { cycle, notifier, reporter, enforcer, stateRepository, logger, clock };
 }
 
 const unambiguousMining = [
