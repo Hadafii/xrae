@@ -20,22 +20,52 @@ SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PANEL_URL=""
 NODE_TOKEN=""
+PTERO_URL=""
+PTERO_KEY=""
+PTERO_NODE_ID=""
+VOLUMES_PATH=""
+NODE_BIN=""
 
 die()  { printf '\n  error: %s\n\n' "$*" >&2; exit 1; }
 step() { printf '  ==> %s\n' "$*"; }
 
+WINGS_CONFIG="${WINGS_CONFIG:-/etc/pterodactyl/config.yml}"
+
+# Wings already knows where the volumes are; asking the operator to retype it is
+# how you end up scanning a directory that does not exist and reporting a clean
+# node forever. Only the one scalar is read here; the richer detection (node id,
+# panel URL) happens in `xrae provision`, where it can be tested.
+read_wings_volumes_path() {
+  [[ -r "$WINGS_CONFIG" ]] || return 0
+  awk '
+    /^[^[:space:]#]/ { in_system = ($0 ~ /^system[[:space:]]*:/) }
+    in_system && /^[[:space:]]+data[[:space:]]*:/ {
+      sub(/^[[:space:]]+data[[:space:]]*:[[:space:]]*/, "")
+      gsub(/^["'"'"']|["'"'"']$/, "")
+      print; exit
+    }
+  ' "$WINGS_CONFIG"
+}
+
 usage() {
   cat <<'USAGE'
-  Usage: install.sh [--panel URL --token TOKEN]
+  Usage: install.sh --panel URL --token TOKEN [--ptero-key KEY]
 
-    --panel URL     X-Rae control panel, e.g. https://xrae.raehost.com
-    --token TOKEN   node token issued by that panel (shown once)
-    -h, --help      this text
+    --panel URL          X-Rae control panel, e.g. https://xrae.raehost.com
+    --token TOKEN        node token issued by that panel (shown once)
+    --ptero-key KEY      Pterodactyl application key (ptla_...)
+    --ptero-url URL      Pterodactyl panel; read from Wings if omitted
+    --node-id N          Pterodactyl node id; resolved from Wings if omitted
+    --volumes-path PATH  read from Wings if omitted
+    -h, --help           this text
 
-  With both flags the install is non-interactive: reporting is configured and
-  the service is started for you. This is the form the panel prints when you
-  add a node. Without them the install stops after copying files, exactly as
-  before, and you finish by hand.
+  With --panel and --token the install is non-interactive end to end: it reads
+  Wings' own config for the volumes path, resolves this machine's node id,
+  verifies the token against the panel, writes both config files, installs the
+  unit and starts it. This is the form the panel prints when you add a node.
+
+  Without them the install stops after copying files and you finish by hand
+  with `xrae init`.
 USAGE
 }
 
@@ -44,8 +74,16 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --panel) PANEL_URL="${2:-}"; shift 2 ;;
     --token) NODE_TOKEN="${2:-}"; shift 2 ;;
+    --ptero-url) PTERO_URL="${2:-}"; shift 2 ;;
+    --ptero-key) PTERO_KEY="${2:-}"; shift 2 ;;
+    --node-id) PTERO_NODE_ID="${2:-}"; shift 2 ;;
+    --volumes-path) VOLUMES_PATH="${2:-}"; shift 2 ;;
     --panel=*) PANEL_URL="${1#*=}"; shift ;;
     --token=*) NODE_TOKEN="${1#*=}"; shift ;;
+    --ptero-url=*) PTERO_URL="${1#*=}"; shift ;;
+    --ptero-key=*) PTERO_KEY="${1#*=}"; shift ;;
+    --node-id=*) PTERO_NODE_ID="${1#*=}"; shift ;;
+    --volumes-path=*) VOLUMES_PATH="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; die "unknown option: $1" ;;
   esac
@@ -100,6 +138,7 @@ done
 # upgrade on a production node is not something a security agent should cause.
 if command -v node >/dev/null 2>&1 && [[ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]]; then
   step "Node.js $(node -v) already installed"
+  NODE_BIN="$(command -v node)"
 else
   step "installing Node.js ${NODE_MAJOR}.x"
   apt-get update -qq
@@ -112,7 +151,13 @@ else
   grep -q 'nodesource' "$setup_script" || die "the downloaded setup script does not look right; aborting"
   bash "$setup_script"
   apt-get install -y -qq nodejs
+  NODE_BIN="$(command -v node)"
 fi
+
+# The unit used to hardcode /usr/bin/node. A node with nvm, snap or
+# /usr/local/bin/node passed the version check above and then failed 203/EXEC in
+# a restart loop, so the installer reported success on a node that never ran.
+[[ -n "${NODE_BIN:-}" ]] || die "node is on PATH for this shell but could not be resolved"
 
 # ---------------------------------------------------------------------------
 # 2. Unprivileged service user
@@ -144,7 +189,7 @@ chmod 750 "$STATE_DIR"
 # A convenience wrapper so `xrae` works from anywhere.
 cat > /usr/local/bin/xrae <<EOF
 #!/bin/sh
-exec /usr/bin/node $APP_DIR/bin/xrae "\$@"
+exec $NODE_BIN $APP_DIR/bin/xrae "\$@"
 EOF
 chmod 755 /usr/local/bin/xrae
 step "installed the xrae command"
@@ -175,7 +220,24 @@ install -m 0644 "$SOURCE_DIR/xrae.env.example" "$APP_DIR/xrae.env.example"
 # agent silently vanished on the next reboot while operators believed it was
 # still watching. This actually enables the unit.
 step "installing systemd unit"
-install -m 0644 "$SOURCE_DIR/systemd/xrae.service" /etc/systemd/system/xrae.service
+
+# The unit ships with placeholder paths and is rendered here, because both of the
+# values it needs are machine-specific:
+#
+#   node       hardcoding /usr/bin/node failed 203/EXEC on any node using nvm,
+#              snap or /usr/local/bin.
+#   volumes    ReadOnlyPaths with a path that does not exist is FATAL to systemd
+#              (226/NAMESPACE), so a node whose Wings data lives elsewhere never
+#              started at all. It is also prefixed with "-" now, which makes a
+#              missing path non-fatal rather than a silent install failure.
+VOLUMES_PATH="$(read_wings_volumes_path)"
+[[ -n "$VOLUMES_PATH" ]] || VOLUMES_PATH="/var/lib/pterodactyl/volumes"
+
+sed \
+  -e "s|@NODE_BIN@|$NODE_BIN|g" \
+  -e "s|@VOLUMES_PATH@|$VOLUMES_PATH|g" \
+  "$SOURCE_DIR/systemd/xrae.service" > /etc/systemd/system/xrae.service
+chmod 0644 /etc/systemd/system/xrae.service
 systemctl daemon-reload
 systemctl enable xrae.service >/dev/null 2>&1
 
@@ -183,37 +245,63 @@ systemctl enable xrae.service >/dev/null 2>&1
 # 7. Panel reporting (only when --panel and --token were given)
 # ---------------------------------------------------------------------------
 if [[ -n "$PANEL_URL" ]]; then
-  step "configuring reporting to $PANEL_URL"
+  step "provisioning against $PANEL_URL"
 
-  ENV_FILE="$CONF_DIR/xrae.env"
-  touch "$ENV_FILE"
+  # Everything the node needs is derived here, not asked for: `xrae provision`
+  # reads Wings' own config for the volumes path and resolves this machine's
+  # numeric Pterodactyl node id from its uuid. It also verifies the token before
+  # writing anything, so a typo fails now rather than as silence in the panel.
+  provision_args=(provision --config "$CONF_DIR/config.json" --panel "$PANEL_URL" --token "$NODE_TOKEN")
+  [[ -n "$PTERO_URL"      ]] && provision_args+=(--ptero-url "$PTERO_URL")
+  [[ -n "$PTERO_KEY"      ]] && provision_args+=(--ptero-key "$PTERO_KEY")
+  [[ -n "$PTERO_NODE_ID"  ]] && provision_args+=(--node-id "$PTERO_NODE_ID")
+  [[ -n "$VOLUMES_PATH"   ]] && provision_args+=(--volumes-path "$VOLUMES_PATH")
 
-  # Replace in place if present, append if not, so re-running with a rotated
-  # token updates rather than stacking duplicate lines (systemd takes the last
-  # one, which makes duplicates a confusing way to be wrong).
-  for pair in "XRAE_REPORTING_URL=$PANEL_URL" "XRAE_REPORTING_TOKEN=$NODE_TOKEN"; do
-    key="${pair%%=*}"
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-      sed -i "s|^${key}=.*|${pair}|" "$ENV_FILE"
-    else
-      printf '%s\n' "$pair" >> "$ENV_FILE"
-    fi
-  done
+  set +e
+  "$NODE_BIN" "$APP_DIR/bin/xrae" "${provision_args[@]}"
+  provision_status=$?
+  set -e
 
-  chown root:"$SERVICE_USER" "$ENV_FILE"
-  chmod 640 "$ENV_FILE"
+  chown root:"$SERVICE_USER" "$CONF_DIR/xrae.env" 2>/dev/null || true
+  chmod 640 "$CONF_DIR/xrae.env" 2>/dev/null || true
 
-  if [[ -f "$CONF_DIR/config.json" ]]; then
-    step "starting xrae"
-    systemctl restart xrae.service
+  # 3 means "configured, but no Pterodactyl key yet". Starting then would give a
+  # node that authenticates to the panel and fails every scan, which is the state
+  # that used to look like a healthy install.
+  if [[ $provision_status -eq 3 ]]; then
     printf '
   ──────────────────────────────────────────────────────────────────
-  Reporting to %s is configured and the service is running.
+  Configured, but NOT started: the Pterodactyl application key is missing.
 
-  This node appears in the panel on its first heartbeat, usually within
-  seconds. Watch it come up with:
+  Add it, then start:
+
+       sudo nano %s/xrae.env      # XRAE_PANEL_APP_KEY=ptla_...
+       sudo systemctl start xrae
+  ──────────────────────────────────────────────────────────────────
+
+' "$CONF_DIR"
+    exit 0
+  fi
+
+  [[ $provision_status -eq 0 ]] || die "provisioning failed; nothing was started"
+
+  step "starting xrae"
+  systemctl restart xrae.service
+
+  # Give the unit a moment to either come up or die, then say which it was. The
+  # old script printed "the service is running" without ever checking.
+  sleep 2
+  if systemctl is-active --quiet xrae.service; then
+    printf '
+  ──────────────────────────────────────────────────────────────────
+  Done. This node is reporting to %s.
+
+  It checks in immediately on startup, so it should already be visible
+  in the panel. Watch it work:
 
        journalctl -u xrae -f
+
+  It is in "observe" mode and will not touch a single server.
   ──────────────────────────────────────────────────────────────────
 
 ' "$PANEL_URL"
@@ -221,14 +309,24 @@ if [[ -n "$PANEL_URL" ]]; then
   fi
 
   printf '
-  Reporting is configured, but there is no %s/config.json yet, so the
-  service was not started. Finish with:
+  ──────────────────────────────────────────────────────────────────
+  The service was installed and configured but is NOT running.
 
-       sudo xrae init --config %s/config.json
-       sudo systemctl start xrae
+       systemctl status xrae
+       journalctl -u xrae -n 50 --no-pager
+  ──────────────────────────────────────────────────────────────────
 
-' "$CONF_DIR" "$CONF_DIR"
-  exit 0
+'
+  exit 1
+fi
+
+# An upgrade is `git pull && sudo ./install.sh`. Without this the new files were
+# copied and the OLD process kept running, so operators believed they had
+# upgraded while the previous modules stayed loaded. try-restart is a no-op when
+# the unit is not running, which is what makes it safe on a first install.
+if [[ -f "$CONF_DIR/config.json" ]] && systemctl is-enabled --quiet xrae.service 2>/dev/null; then
+  step "restarting xrae to pick up the new files"
+  systemctl try-restart xrae.service || true
 fi
 
 printf '

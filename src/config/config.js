@@ -280,6 +280,17 @@ export function containsSecrets(fromFile) {
   return TRACKED_SECRETS.some((secret) => Boolean(readValueAt(fromFile, secret.keyPath)));
 }
 
+/**
+ * Values that look configured but are not. Exported so the installer and the
+ * provisioner apply exactly the same rule as startup validation does.
+ */
+export function isPlaceholderSecret(value) {
+  return (
+    typeof value === 'string' &&
+    /replace[_-]?me|your[_-]?\w*key|ptla_x{3,}|changeme|example/i.test(value)
+  );
+}
+
 function validate(config) {
   const problems = [];
   const require = (condition, message) => { if (!condition) problems.push(message); };
@@ -288,6 +299,14 @@ function validate(config) {
   require(
     Boolean(config.panel.applicationKey),
     'panel.applicationKey is required (or set the XRAE_PANEL_APP_KEY environment variable)',
+  );
+  // A placeholder passes every emptiness check and then fails at the first API
+  // call, which surfaces as a node that authenticates to the X-Rae panel and
+  // never manages a single scan. Refuse it the same way an empty value is
+  // refused, so the failure lands at startup where someone is watching.
+  require(
+    !isPlaceholderSecret(config.panel.applicationKey),
+    'panel.applicationKey is still a placeholder; put your real ptla_ key in XRAE_PANEL_APP_KEY',
   );
 
   // Reporting is optional, but half-configured reporting is not: silently never

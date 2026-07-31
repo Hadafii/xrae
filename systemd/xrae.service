@@ -17,7 +17,10 @@ WorkingDirectory=/opt/xrae
 # fix ownership in /etc; the guard makes it a no-op when the file is absent.
 ExecStartPre=+/bin/sh -c 'test -f /etc/xrae/xrae.env && chown root:xrae /etc/xrae/xrae.env && chmod 640 /etc/xrae/xrae.env || true'
 
-ExecStart=/usr/bin/node /opt/xrae/bin/xrae run --config /etc/xrae/config.json
+# @NODE_BIN@ is substituted by install.sh. Hardcoding /usr/bin/node meant any
+# node using nvm, snap or /usr/local/bin failed 203/EXEC in a restart loop while
+# the installer reported success.
+ExecStart=@NODE_BIN@ /opt/xrae/bin/xrae run --config /etc/xrae/config.json
 
 # Credentials live here, not in config.json.
 EnvironmentFile=-/etc/xrae/xrae.env
@@ -64,8 +67,11 @@ StateDirectory=xrae
 StateDirectoryMode=0750
 ReadWritePaths=/var/lib/xrae
 
-# Read-only view of what we scan.
-ReadOnlyPaths=/var/lib/pterodactyl/volumes
+# Read-only view of what we scan. @VOLUMES_PATH@ is substituted by install.sh
+# from Wings' own config, and the leading "-" makes a missing path non-fatal:
+# without it systemd refuses to start the unit at all (226/NAMESPACE) on any node
+# whose Wings data lives somewhere else, and the agent never scans anything.
+ReadOnlyPaths=-@VOLUMES_PATH@
 
 # ---------------------------------------------------------------------------
 # Capabilities - deliberately just two, instead of root

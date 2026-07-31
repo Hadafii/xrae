@@ -19,4 +19,8 @@ export class NullCycleReporter {
 
     return [];
   }
+
+  async keepalive() {
+    return [];
+  }
 }

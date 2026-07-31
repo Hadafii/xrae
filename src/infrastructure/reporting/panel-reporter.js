@@ -95,6 +95,49 @@ export class PanelReporter {
     return this.#sendHeartbeat(cycleId, report);
   }
 
+  /**
+   * A heartbeat carrying no cycle.
+   *
+   * Without this the panel only hears from a node when a full scan finishes, so
+   * a fresh install sat at "never connected" for a whole interval, and a node
+   * whose cycles were throwing (a wrong Pterodactyl key, an unreadable volumes
+   * path) never appeared at all. That is the worst possible failure for an
+   * abuse-detection fleet: the broken node is indistinguishable from one that
+   * was never installed.
+   *
+   * `cycle` is optional in the panel's schema precisely so this can exist.
+   *
+   * @param {string} reason why we are checking in, for the local log only
+   */
+  async keepalive(reason = 'keepalive') {
+    if (!this.enabled) return [];
+
+    const body = {
+      agent_version: this.agentVersion,
+      config_hash: this.appliedConfig?.hash ?? null,
+    };
+
+    try {
+      const response = await this.http.send(`${this.baseUrl}/api/agent/heartbeat`, {
+        method: 'POST',
+        headers: this.#headers,
+        body: JSON.stringify(body),
+        label: `panel ${reason}`,
+      });
+
+      const data = response.data?.data ?? {};
+
+      this.desiredConfigHash = data.desired_config_hash ?? null;
+      this.logger.debug(`panel ${reason} acknowledged`);
+
+      return Array.isArray(data.commands) ? data.commands : [];
+    } catch (error) {
+      this.#explain(reason, error);
+
+      return [];
+    }
+  }
+
   async #sendReport(cycleId, report) {
     const entries = report.entries.slice(0, LIMIT.servers);
 

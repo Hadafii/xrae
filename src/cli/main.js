@@ -3,7 +3,14 @@
 
 import { ConfigError } from '../config/config.js';
 import { VERSION } from '../version.js';
-import { commandInit, commandDoctor, commandScan, commandExplain, commandNotifyTest } from './commands.js';
+import {
+  commandInit,
+  commandDoctor,
+  commandScan,
+  commandExplain,
+  commandNotifyTest,
+  commandProvision,
+} from './commands.js';
 
 export { VERSION };
 const DEFAULT_CONFIG_PATH = '/etc/xrae/config.json';
@@ -15,6 +22,7 @@ const HELP = `
     xrae <command> [options]
 
   COMMANDS
+    provision            configure this node from the panel, non-interactively
     init                 create a config file, interactively
     doctor               check the config, credentials and permissions
     scan                 run one cycle and exit
@@ -29,11 +37,21 @@ const HELP = `
     -v, --verbose        debug logging
     -h, --help           this text
 
+  PROVISION OPTIONS
+        --panel <url>          X-Rae panel, e.g. https://xrae.raehost.com
+        --token <token>        node token that panel issued (shown once)
+        --ptero-url <url>      Pterodactyl panel; read from Wings if omitted
+        --ptero-key <ptla_...> Pterodactyl application key
+        --node-id <n>          Pterodactyl node id; resolved from Wings if omitted
+        --volumes-path <path>  read from Wings if omitted
+        --force                overwrite an existing config, ignore a failed check
+
   GETTING STARTED
-    xrae init
-    xrae doctor
-    xrae scan --dry-run --verbose
-    systemctl start xrae
+    The panel prints a provision command when you add a node. By hand:
+
+    sudo ./install.sh --panel https://xrae.raehost.com --token xrae_node_... \\
+         --ptero-key ptla_...
+    journalctl -u xrae -f
 
   SECRETS
     Credentials live in "xrae.env", NEXT TO your config.json. X-Rae finds and
@@ -81,6 +99,27 @@ function parseArguments(argv) {
       case '--help':
         options.command = 'help';
         break;
+      case '--panel':
+        options.panelUrl = rest.shift();
+        break;
+      case '--token':
+        options.panelToken = rest.shift();
+        break;
+      case '--ptero-url':
+        options.pteroUrl = rest.shift();
+        break;
+      case '--ptero-key':
+        options.pteroKey = rest.shift();
+        break;
+      case '--node-id':
+        options.nodeId = rest.shift();
+        break;
+      case '--volumes-path':
+        options.volumesPath = rest.shift();
+        break;
+      case '--force':
+        options.force = true;
+        break;
       default:
         if (argument.startsWith('-')) {
           process.stderr.write(`Unknown option: ${argument}\nRun "xrae --help".\n`);
@@ -98,6 +137,9 @@ export async function main(argv = process.argv.slice(2)) {
 
   try {
     switch (options.command) {
+      case 'provision':
+        return await commandProvision(options);
+
       case 'init':
         return await commandInit(options);
 

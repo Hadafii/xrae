@@ -15,6 +15,15 @@ import { buildApplication } from '../composition-root.js';
 import { ConsoleLogger } from '../infrastructure/system/logger.js';
 import { PolicyMode } from '../domain/policy.js';
 import { RULE_PACK, REGEX_RULES, PROCESS_RULES, validateRulePack } from '../domain/rules.js';
+import { VERSION } from '../version.js';
+import {
+  WINGS_CONFIG_PATH,
+  detectWingsConfig,
+  isPlaceholder,
+  mergeEnvFile,
+  resolveNodeId,
+  verifyPanel,
+} from './provision.js';
 
 const CHECK = '  \x1b[32m✓\x1b[0m';
 const CROSS = '  \x1b[31m✗\x1b[0m';
@@ -25,6 +34,182 @@ const SERVICE_GROUP = 'xrae';
 
 function print(line = '') {
   stdout.write(line + '\n');
+}
+
+// ---------------------------------------------------------------------------
+// xrae provision
+// ---------------------------------------------------------------------------
+
+/**
+ * Non-interactive setup, the way `wings configure` works.
+ *
+ * The panel issues a token and prints one command; this turns that into a node
+ * that is scanning and reporting. It is what `install.sh --panel --token` calls.
+ *
+ * The install used to stop short of this: it wrote the credentials file, then
+ * refused to start because no config.json existed, and the only way to create
+ * one was six interactive prompts. So the "one command" the panel printed ended
+ * with a node that was installed, not running, and invisible in the panel.
+ *
+ * Anything already on disk wins over anything detected, and detection never
+ * guesses: an undetectable volumes path is an error, not a default, because
+ * scanning the wrong directory finds nothing and looks exactly like a clean node.
+ */
+export async function commandProvision({
+  configPath,
+  panelUrl,
+  panelToken,
+  pteroUrl,
+  pteroKey,
+  nodeId,
+  volumesPath,
+  wingsConfigPath = WINGS_CONFIG_PATH,
+  force = false,
+}) {
+  const resolvedConfig = path.resolve(configPath);
+  const resolvedEnv = resolveEnvFilePath({ configFilePath: resolvedConfig });
+
+  print('\n  X-Rae provisioning');
+  print('  ──────────────────\n');
+
+  if (!panelUrl || !panelToken) {
+    print(`${CROSS} --panel and --token are both required\n`);
+
+    return 2;
+  }
+
+  const wings = detectWingsConfig(wingsConfigPath);
+
+  if (wings.volumesPath || wings.remote) {
+    print(`${CHECK} read ${wingsConfigPath}`);
+  } else {
+    print(`${WARN} could not read ${wingsConfigPath}; falling back to flags`);
+  }
+
+  const resolvedPteroUrl = (pteroUrl || wings.remote || '').replace(/\/+$/, '');
+  const resolvedVolumes = volumesPath || wings.volumesPath;
+
+  if (!resolvedVolumes) {
+    print(`${CROSS} no volumes path. Pass --volumes-path, or install on a Wings node.\n`);
+
+    return 2;
+  }
+  if (!fs.existsSync(resolvedVolumes)) {
+    print(`${CROSS} volumes path does not exist: ${resolvedVolumes}\n`);
+
+    return 2;
+  }
+  if (!resolvedPteroUrl) {
+    print(`${CROSS} no Pterodactyl URL. Pass --ptero-url.\n`);
+
+    return 2;
+  }
+
+  const existingEnv = fs.existsSync(resolvedEnv) ? fs.readFileSync(resolvedEnv, 'utf8') : '';
+  const carriedKey = existingEnv.match(/^\s*XRAE_PANEL_APP_KEY\s*=\s*(.+)$/m)?.[1]?.trim();
+  const applicationKey = isPlaceholder(pteroKey) ? '' : pteroKey || (isPlaceholder(carriedKey) ? '' : carriedKey);
+
+  if (!applicationKey) {
+    print(`${WARN} no Pterodactyl application key yet (--ptero-key)`);
+  }
+
+  // 0 means "every node this key can see", which for a per-node agent means the
+  // whole fleet reports the whole fleet. Worth resolving properly.
+  let resolvedNodeId = Number.isInteger(Number(nodeId)) && nodeId !== undefined ? Number(nodeId) : null;
+
+  if (resolvedNodeId === null) {
+    resolvedNodeId = await resolveNodeId({
+      panelUrl: resolvedPteroUrl,
+      applicationKey,
+      uuid: wings.uuid,
+    });
+
+    if (resolvedNodeId !== null) {
+      print(`${CHECK} matched this machine to Pterodactyl node ${resolvedNodeId}`);
+    } else {
+      print(`${WARN} could not resolve the node id; using 0 (all nodes this key can see)`);
+      resolvedNodeId = 0;
+    }
+  }
+
+  const verdict = await verifyPanel({
+    panelUrl,
+    token: panelToken,
+    agentVersion: VERSION,
+  });
+
+  if (verdict.ok) {
+    print(`${CHECK} the panel accepted this token`);
+  } else {
+    print(`${CROSS} ${verdict.reason}`);
+    if (!force) {
+      print('\n  Nothing was written. Re-run with --force to provision anyway.\n');
+
+      return 2;
+    }
+    print(`${WARN} --force given; provisioning anyway`);
+  }
+
+  let configKept = false;
+
+  if (fs.existsSync(resolvedConfig) && !force) {
+    print(`${WARN} ${resolvedConfig} exists and was kept`);
+    configKept = true;
+  } else {
+    fs.mkdirSync(path.dirname(resolvedConfig), { recursive: true });
+    fs.writeFileSync(
+      resolvedConfig,
+      renderConfigFile({
+        panelUrl: resolvedPteroUrl,
+        nodeId: resolvedNodeId,
+        volumesPath: resolvedVolumes,
+        envFilePath: resolvedEnv,
+      }),
+      { mode: 0o644 },
+    );
+    print(`${CHECK} wrote ${resolvedConfig}`);
+  }
+
+  const merged = mergeEnvFile(existingEnv, {
+    XRAE_REPORTING_URL: panelUrl.replace(/\/+$/, ''),
+    XRAE_REPORTING_TOKEN: panelToken,
+    XRAE_PANEL_URL: resolvedPteroUrl,
+    XRAE_PANEL_APP_KEY: applicationKey,
+  });
+
+  fs.writeFileSync(resolvedEnv, merged, { mode: 0o600 });
+  grantServiceGroupRead(resolvedEnv);
+  print(`${CHECK} updated ${resolvedEnv}`);
+
+  print('');
+
+  // When the config was kept, the values computed above are NOT what the agent
+  // will run. Printing them anyway would be a summary of a file that was not
+  // written, which is exactly the kind of confident wrong answer this tool
+  // exists to remove.
+  if (configKept) {
+    print(`  Config        ${resolvedConfig}  (kept; re-run with --force to rewrite)`);
+  } else {
+    print(`  Pterodactyl   ${resolvedPteroUrl}`);
+    print(
+      `  Node id       ${resolvedNodeId}${resolvedNodeId === 0 ? '  (all nodes this key can see)' : ''}`,
+    );
+    print(`  Volumes       ${resolvedVolumes}`);
+    print(`  Mode          observe  (it will not touch a single server)`);
+  }
+
+  print(`  Reporting to  ${panelUrl}`);
+  print('');
+
+  if (!applicationKey) {
+    print(`${WARN} Add your Pterodactyl application key before starting:`);
+    print(`      sudo sed -i 's|^XRAE_PANEL_APP_KEY=.*|XRAE_PANEL_APP_KEY=ptla_yourkey|' ${resolvedEnv}`);
+    print('');
+
+    return 3;
+  }
+
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +676,14 @@ export async function commandScan({ configPath, dryRun, verbose, once }) {
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
 
+  // Check in before scanning anything. A first cycle takes minutes on a busy
+  // node, so without this the panel showed a freshly installed agent as "never
+  // connected" for the whole interval, and the operator had no way to tell a
+  // working install from a wrong token.
+  if (!once) {
+    await app.reporter?.keepalive?.('startup').catch?.(() => {});
+  }
+
   do {
     let commands = [];
 
@@ -500,6 +693,10 @@ export async function commandScan({ configPath, dryRun, verbose, once }) {
       commands = summary?.commands ?? [];
     } catch (error) {
       logger.error(`cycle failed: ${error.stack ?? error.message}`);
+
+      // The cycle threw, so reportCycle never ran and the panel heard nothing.
+      // Check in anyway: "alive but failing" is a diagnosis, absence is not.
+      commands = await app.reporter?.keepalive?.('post-failure').catch?.(() => []) ?? [];
     }
 
     if (once || cancellation.aborted) break;
