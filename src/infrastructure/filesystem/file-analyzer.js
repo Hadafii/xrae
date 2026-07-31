@@ -91,6 +91,69 @@ function detectFileMagic(head) {
   return null;
 }
 
+/**
+ * Container formats whose contents are compressed, so their entropy is ~7.9 by
+ * construction and says nothing about whether anything is hidden inside.
+ *
+ * Detected by CONTENT, not by extension. The extension allowlist missed
+ * `.mcpack` (a Bedrock resource pack, which is a plain zip) and flagged
+ * `GeyserIntegratedPack.mcpack` at entropy 7.80 on a real customer server. Every
+ * game ecosystem invents its own extension for a zip: .mcpack, .mcaddon, .mrpack,
+ * .jar, .litemod, .schem. Chasing that list is a losing game; the magic bytes are
+ * finite and stable.
+ */
+function isCompressedContainer(head) {
+  if (head.length < 4) return false;
+
+  // PK\x03\x04 and the empty/spanned variants: zip, jar, mcpack, mrpack, docx...
+  if (head[0] === 0x50 && head[1] === 0x4b && (head[2] === 0x03 || head[2] === 0x05 || head[2] === 0x07)) {
+    return true;
+  }
+  if (head[0] === 0x1f && head[1] === 0x8b) return true;                                    // gzip
+  if (head[0] === 0xfd && head[1] === 0x37 && head[2] === 0x7a && head[3] === 0x58) return true; // xz
+  if (head[0] === 0x42 && head[1] === 0x5a && head[2] === 0x68) return true;                // bzip2
+  if (head[0] === 0x28 && head[1] === 0xb5 && head[2] === 0x2f && head[3] === 0xfd) return true; // zstd
+  if (head[0] === 0x37 && head[1] === 0x7a && head[2] === 0xbc && head[3] === 0xaf) return true; // 7z
+  if (head[0] === 0x52 && head[1] === 0x61 && head[2] === 0x72 && head[3] === 0x21) return true; // rar
+  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return true; // png
+  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return true;                // jpeg
+  if (head[0] === 0x4f && head[1] === 0x67 && head[2] === 0x67 && head[3] === 0x53) return true; // ogg
+
+  return false;
+}
+
+/**
+ * Deobfuscation mapping tables and the dependency caches the server software
+ * downloads for itself.
+ *
+ * These files are, by construction, megabytes of short pseudorandom identifiers:
+ * Mojang/Paper/Forge remapping tables map obfuscated names like `aab` to real
+ * ones. Any 6-to-8 character lowercase word appears in them by chance. In
+ * production this produced four MINER alerts on innocent servers, all from the
+ * literal string "randomx" inside:
+ *
+ *   plugins/.paper-remapped/mappings/reversed/<hex>
+ *   libraries/net/minecraft/server/1.21.11/server-1.21.11-mappings.tsrg
+ *   libraries/net/neoforged/neoform/1.21.1-.../neoform-1.21.1-...-map
+ *
+ * They are not customer content: the customer never wrote them, and could not
+ * hide anything in them that the server would execute. Treated like node_modules,
+ * which the walker already skips outright. Weak substring rules are suppressed
+ * here; standalone rules are not, so a genuinely damning string still surfaces.
+ */
+export function isBuildArtifactPath(relativePath) {
+  const normalized = String(relativePath ?? '').replace(/\\/g, '/').toLowerCase();
+
+  if (/(^|\/)\.paper-remapped\//.test(normalized)) return true;
+  if (/(^|\/)libraries\//.test(normalized)) return true;
+  if (/(^|\/)versions\/[^/]+\/[^/]*\.json$/.test(normalized)) return true;
+  if (/(^|\/)(mappings|neoform|mcp|forge-installer)\//.test(normalized)) return true;
+  if (/[.-](tsrg|srg|csrg|proguard|mapping|mappings)$/.test(normalized)) return true;
+  if (/[-.]mappings?(\.txt|\.gz)?$/.test(normalized)) return true;
+
+  return false;
+}
+
 export class FileContentAnalyzer {
   /**
    * @param {object} options
@@ -280,6 +343,12 @@ export class FileContentAnalyzer {
     const sample = Buffer.allocUnsafe(sampleSize);
     fs.readSync(fd, sample, 0, sampleSize, 0);
 
+    // Checked on the bytes we just read, after the cheap extension test above
+    // has already excluded the obvious cases. A compressed container measures
+    // ~7.9 no matter what is in it, so reporting its entropy is reporting the
+    // format, not the contents.
+    if (isCompressedContainer(sample)) return;
+
     const entropy = shannonEntropy(sample);
     if (entropy < this.settings.entropyThreshold) return;
 
@@ -305,6 +374,31 @@ export class FileContentAnalyzer {
    */
   #applyWeighting(rawFindings, fileClass, relativePath) {
     const signatureCount = rawFindings.filter((f) => f.family === EvidenceFamily.SIGNATURE).length;
+
+    // Same shape as the flood guard below, different trigger: a mapping table is
+    // a haystack of random identifiers, so a weak substring hit inside one is
+    // arithmetic, not evidence. Standalone rules are left alone.
+    if (isBuildArtifactPath(relativePath)) {
+      const weak = rawFindings.filter((finding) => !finding.standalone);
+
+      if (weak.length > 0) {
+        this.logger.debug(
+          `${relativePath} is a build or mapping artifact; suppressing ${weak.length} weak match(es)`,
+        );
+      }
+
+      return rawFindings.map((finding) =>
+        finding.standalone
+          ? createEvidence(finding)
+          : createEvidence({
+              ...finding,
+              weight: 1,
+              confidence: 'low',
+              standalone: false,
+              detail: `${finding.detail} [suppressed: server build artifact, not customer content]`,
+            }),
+      );
+    }
 
     // A reference list, blocklist, wiki dump or log is text or config - never an
     // ELF. So an EXECUTABLE that matches many malware signatures IS the malware,

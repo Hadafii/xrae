@@ -18,7 +18,21 @@
 //   3. NO DECAY        A clean server gaining +5 of noise per cycle was
 //                      GUARANTEED to cross 100 eventually. That is a timer,
 //                      not a detector.
-//                      -> Fixed by exponential decay.
+//                      -> Decay alone did NOT fix this. See 4.
+//   4. PERSISTENCE     Decay slows the timer, it does not stop it. Adding
+//                      cycleScore every cycle converges on
+//                      cycleScore / (1 - retention), and at a 15-minute
+//                      interval against a 24h half-life the retention is
+//                      0.9928, so the steady state is ~139x one cycle.
+//                      One weight-20 non-standalone rule (cycleScore 9)
+//                      settled at ~1250 against a threshold of 100. Observed
+//                      in production: four servers alerting at 453-1494 on a
+//                      single substring match in a Minecraft mappings file,
+//                      "seen in 149 consecutive cycles".
+//                      -> Fixed by PERSISTENCE_CAP: the total may never exceed
+//                         a small multiple of what the CURRENT cycle is worth,
+//                         so the score measures the server's state and not how
+//                         long we have been looking at it.
 //
 // Why corroboration matters, with numbers (see design doc section 6.2):
 // on a 200-server node with 1% abuse, a single-layer detector at 3% false
@@ -57,6 +71,25 @@ export const CORROBORATION_MULTIPLIER = Object.freeze({
   2: 0.85,
   3: 1.0, // 3 or more
 });
+
+/**
+ * How much history may add on top of what this cycle is worth.
+ *
+ * Persistence is real evidence: a miner that is still there after a day is more
+ * interesting than one seen once. But it must be BOUNDED, because the alternative
+ * is a detector whose output depends on uptime. Three means a finding that
+ * refuses to go away is worth three of itself and no more.
+ *
+ * The cap deliberately tracks the CURRENT cycle, not the highest ever seen. If
+ * the corroborating families disappear, the server is only weakly suspicious now
+ * and the score should say so promptly rather than coasting on history.
+ *
+ * Consequence worth stating plainly: a single non-standalone weight-20 rule can
+ * never exceed 27, so it can never reach the threshold alone no matter how long
+ * it persists. That is the intended behaviour. A bare algorithm name in a file is
+ * not a miner.
+ */
+export const PERSISTENCE_CAP = 3;
 
 const DEFAULT_FAMILY_CAP = 40;
 
@@ -208,7 +241,7 @@ export class ScoreCalculator {
 
     return Object.freeze({
       cycleScore,
-      totalScore: decayedHistory + cycleScore,
+      totalScore: Math.min(decayedHistory + cycleScore, cycleScore * PERSISTENCE_CAP),
       confidence: resolveConfidence(unique, families.length, hasStandalone),
       families,
       hasStandalone,
